@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>myABA — Single File (Upload Fix)</title>
+  <style>
+    :root{
+      --bg:#f7f7fb; --card:#ffffff; --ink:#0f172a; --muted:#6b7280;
+      --brand:#2563eb; --brand-2:#1e40af; --ok:#16a34a; --bad:#dc2626;
+      --ring:rgba(37,99,235,.25); --shadow: 0 10px 20px rgba(0,0,0,.07), 0 6px 6px rgba(0,0,0,.06);
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:var(--ink);
+      background:linear-gradient(180deg,#fafafc,#eef2ff 35%,#f7f7fb 100%);}
+    a{color:var(--brand);text-decoration:none}
+    a:hover{color:var(--brand-2);text-decoration:underline}
+    header{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.75);backdrop-filter:saturate(180%) blur(10px);border-bottom:1px solid #e5e7eb;}
+    .nav{max-width:1100px;margin:0 auto;display:flex;gap:16px;align-items:center;padding:12px 20px;}
+    .brand{font-weight:800;letter-spacing:.2px}
+    .spacer{flex:1}
+    .btn{display:inline-flex;align-items:center;justify-content:center;padding:12px 16px;border-radius:12px;border:1px solid #e5e7eb;background:#fff;
+      box-shadow:var(--shadow);font-weight:600;gap:8px;cursor:pointer;user-select:none;-webkit-user-select:none;}
+    .btn:hover{transform:translateY(-1px)}
+    .btn.primary{background:var(--brand);color:#fff;border-color:transparent}
+    .btn.primary:hover{background:var(--brand-2)}
+    .btn.ghost{background:transparent;border-color:transparent;box-shadow:none;color:var(--muted)}
+    .btn.active{background:#eef2ff;border-color:#c7d2fe;color:#1e3a8a}
+    .wrap{max-width:1100px;margin:0 auto;padding:24px}
+    .hero{padding:56px 24px 36px;max-width:1100px;margin:0 auto;display:grid;grid-template-columns:1fr;gap:20px}
+    .hero h1{font-size:clamp(28px,4vw,40px);margin:0 0 8px}
+    .hero p{color:var(--muted);margin:0}
+    .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; margin-top:24px}
+    .card{background:var(--card); border:1px solid #e5e7eb; border-radius:16px; padding:18px; box-shadow:var(--shadow); min-height:120px; display:flex; flex-direction:column; gap:10px}
+    .card h3{margin:0 0 6px;font-size:18px}
+    .muted{color:var(--muted)}
+    .hidden{display:none!important}
+    .grid{display:grid; gap:16px}
+    .two{grid-template-columns:repeat(2,minmax(0,1fr))}
+    @media (max-width:800px){.two{grid-template-columns:1fr}}
+    .input{display:none} /* hide native small input; we use big label buttons */
+    .select{padding:10px 12px;border-radius:10px;border:1px solid #e5e7eb;background:#fff}
+    .pill{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:#f1f5f9;color:#0f172a;font-weight:600;font-size:12px}
+    .kpi{font-weight:800;font-size:22px}
+    .center{display:flex;align-items:center;justify-content:center}
+    .stack{display:flex;flex-direction:column;gap:10px}
+    .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .choices{display:grid; gap:10px}
+    .choice{border:1px solid #e5e7eb; border-radius:12px; padding:12px; cursor:pointer; background:#fff}
+    .choice.correct{border-color:var(--ok); background:#ecfdf5}
+    .choice.wrong{border-color:var(--bad); background:#fef2f2}
+    .toast{padding:10px 12px;border-radius:10px;font-weight:700}
+    .toast.ok{background:#ecfdf5;color:#166534;border:1px solid #86efac}
+    .toast.bad{background:#fef2f2;color:#991b1b;border:1px solid #fecaca}
+    .timer{font-variant-numeric:tabular-nums;font-size:32px;font-weight:900; letter-spacing:1px}
+    .flip{background:#fff; border:1px solid #e5e7eb;border-radius:16px; padding:20px; min-height:180px; display:flex; align-items:center; justify-content:center; text-align:center; font-weight:700; font-size:20px; box-shadow:var(--shadow); cursor:pointer}
+    .footer{color:var(--muted); font-size:12px; padding:30px 24px}
+    .table{width:100%; border-collapse:collapse; font-size:14px}
+    .table th,.table td{border:1px solid #e5e7eb; padding:8px 10px}
+    .table th{background:#f8fafc;text-align:left}
+    .filename{color:var(--muted);font-size:12px}
+  </style>
+</head>
+<body>
+  <header>
+    <nav class="nav" id="top-nav">
+      <div class="brand">myABA</div>
+      <div class="spacer"></div>
+      <a class="btn ghost" href="#/">Home</a>
+      <a class="btn ghost" href="#/flashcards">Flash Cards</a>
+      <a class="btn ghost" href="#/quiz">Quiz</a>
+      <a class="btn ghost" href="#/safmeds">SAFMEDS</a>
+      <a class="btn" href="#/data">Upload & Download</a>
+    </nav>
+  </header>
+
+  <main id="route-home" class="wrap">
+    <section class="hero">
+      <div>
+        <h1>Welcome back 👋</h1>
+        <p>A clean start. Load decks on the <strong>Upload &amp; Download</strong> page when you’re ready.</p>
+        <div class="cards">
+          <div class="card">
+            <h3>Flash Cards</h3>
+            <div class="row"><span class="pill">Deck</span><span id="fc-count" class="kpi">0</span></div>
+            <div><a class="btn primary" href="#/flashcards">Open</a></div>
+          </div>
+          <div class="card">
+            <h3>Quiz</h3>
+            <div class="row"><span class="pill">Items</span><span id="qz-count" class="kpi">0</span></div>
+            <div><a class="btn primary" href="#/quiz">Start</a></div>
+          </div>
+          <div class="card">
+            <h3>SAFMEDS</h3>
+            <p class="muted">Choose 30s/60s/120s; mark ✔/✖; see results.</p>
+            <div><a class="btn primary" href="#/safmeds">Run</a></div>
+          </div>
+          <div class="card">
+            <h3>Upload &amp; Download</h3>
+            <div><a class="btn" href="#/data">Manage Data</a></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <main id="route-flashcards" class="wrap hidden">
+    <h2>Flash Cards</h2>
+    <div class="row">
+      <button class="btn" id="fc-prev">◀ Prev</button>
+      <button class="btn" id="fc-next">Next ▶</button>
+      <button class="btn" id="fc-shuffle">Shuffle</button>
+      <span class="pill"><span id="fc-idx">0</span>/<span id="fc-total">0</span></span>
+    </div>
+    <div id="fc-card" class="flip" title="Click to flip">Click to flip</div>
+  </main>
+
+  <main id="route-quiz" class="wrap hidden">
+    <h2>Quiz</h2>
+    <div class="card">
+      <div class="stack">
+        <div class="row">
+          <button class="btn" id="qz-prev">◀ Prev</button>
+          <button class="btn" id="qz-next">Next ▶</button>
+          <button class="btn" id="qz-shuffle">Shuffle</button>
+          <span class="pill">Item <span id="qz-idx">0</span>/<span id="qz-total">0</span></span>
+        </div>
+        <div id="qz-question" class="stack" style="font-weight:700;font-size:18px;"></div>
+        <div id="qz-choices" class="choices"></div>
+        <div id="qz-feedback" class="hidden"></div>
+      </div>
+    </div>
+  </main>
+
+  <main id="route-safmeds" class="wrap hidden">
+    <h2>SAFMEDS</h2>
+    <div class="card">
+      <div class="row">
+        <label class="row">Duration
+          <select id="sf-duration" class="select">
+            <option value="30">30s</option>
+            <option value="60" selected>60s</option>
+            <option value="120">120s</option>
+          </select>
+        </label>
+        <button class="btn primary" id="sf-start">Start</button>
+        <span class="timer" id="sf-time">00:00</span>
+        <span class="pill">Seen <span id="sf-seen">0</span></span>
+        <span class="pill">✔ <span id="sf-correct">0</span></span>
+        <span class="pill">✖ <span id="sf-wrong">0</span></span>
+      </div>
+      <div id="sf-card" class="flip" title="Click to flip">Click Start</div>
+      <div class="row">
+        <button class="btn" id="sf-correct-btn">✔ Correct</button>
+        <button class="btn" id="sf-wrong-btn">✖ Wrong</button>
+        <button class="btn" id="sf-skip-btn">⏭ Skip</button>
+        <button class="btn" id="sf-reset">Reset</button>
+      </div>
+      <div id="sf-result" class="hidden"></div>
+    </div>
+  </main>
+
+  <main id="route-data" class="wrap hidden">
+    <h2>Upload &amp; Download</h2>
+
+    <div class="grid two">
+      <div class="card">
+        <h3>Flashcards Deck</h3>
+        <p class="muted">CSV headers: <code>term,def</code> (optional <code>domain</code>)</p>
+        <div class="row">
+          <input id="fc-file" type="file" accept=".csv,text/csv" class="input"/>
+          <label for="fc-file" class="btn">📄 Choose CSV</label>
+          <button class="btn" id="fc-load">⬆ Upload CSV</button>
+          <button class="btn" id="fc-save">⬇ Download CSV</button>
+        </div>
+        <div class="filename" id="fc-name">No file chosen</div>
+        <div class="row"><span class="pill">Count</span><span id="fc-manage-count" class="kpi">0</span></div>
+      </div>
+
+      <div class="card">
+        <h3>Quiz Deck</h3>
+        <p class="muted">CSV headers: <code>question,optionA,optionB,optionC,optionD,answer,rationale</code></p>
+        <div class="row">
+          <input id="qz-file" type="file" accept=".csv,text/csv" class="input"/>
+          <label for="qz-file" class="btn">📄 Choose CSV</label>
+          <button class="btn" id="qz-load">⬆ Upload CSV</button>
+          <button class="btn" id="qz-save">⬇ Download CSV</button>
+        </div>
+        <div class="filename" id="qz-name">No file chosen</div>
+        <div class="row"><span class="pill">Count</span><span id="qz-manage-count" class="kpi">0</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Preview (first 10 rows)</h3>
+      <div class="grid two">
+        <div><h4>Flashcards</h4><table class="table" id="fc-preview"></table></div>
+        <div><h4>Quiz</h4><table class="table" id="qz-preview"></table></div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="footer center"><div>myABA — single-file prototype • Data saved in your browser (localStorage)</div></footer>
+
+  <script>
+    const $ = (sel)=>document.querySelector(sel);
+    const $$ = (sel)=>Array.from(document.querySelectorAll(sel));
+    const byId = (id)=>document.getElementById(id);
+
+    // Router (reliable on iPad)
+    const routes={'/':byId('route-home'),'/flashcards':byId('route-flashcards'),'/quiz':byId('route-quiz'),'/safmeds':byId('route-safmeds'),'/data':byId('route-data')};
+    function setActiveLink(hash){ const current=hash||'/'; $$('#top-nav a').forEach(a=>{ const t=a.getAttribute('href').replace('#',''); a.classList.toggle('active', t===current); }); }
+    function showRoute(){ const hash=location.hash.replace('#','')||'/'; Object.values(routes).forEach(el=>el.classList.add('hidden')); (routes[hash]||routes['/']).classList.remove('hidden'); setActiveLink(hash); refreshKPIs(); if(hash==='/data') renderPreviews(); if(hash==='/flashcards') initFlashcardsView(); if(hash==='/quiz') renderQuizItem(); if(hash==='/safmeds') resetSafmeds(); }
+    document.addEventListener('DOMContentLoaded', showRoute);
+    window.addEventListener('hashchange', showRoute);
+    byId('top-nav').addEventListener('click',(e)=>{ const a=e.target.closest('a[href^="#/"]'); if(!a) return; e.preventDefault(); const t=a.getAttribute('href'); if(location.hash!==t) location.hash=t; else showRoute(); });
+
+    // CSV utils (robust, BOM-safe)
+    function stripBOM(text){ if(text.charCodeAt(0)===0xFEFF) return text.slice(1); return text; }
+    function csvParse(text){
+      text = stripBOM(text);
+      const rows=[]; let cur='', inQ=false; const push=()=>rows[rows.length-1].push(cur);
+      rows.push([]);
+      for(let i=0;i<text.length;i++){
+        const c=text[i];
+        if(c=='"'){ if(inQ && text[i+1]=='"'){ cur+='"'; i++; } else inQ=!inQ; }
+        else if(c==',' && !inQ){ push(); cur=''; }
+        else if((c=='\n' || c=='\r') && !inQ){ if(c=='\r' && text[i+1]=='\n') i++; push(); cur=''; rows.push([]); }
+        else { cur+=c; }
+      }
+      push();
+      if(rows.length && rows[rows.length-1].every(x=>x==='')) rows.pop();
+      return rows.filter(r=>r.some(x=>x.trim()!==''));
+    }
+    function toCSV(rows){
+      const esc=(v)=>{ v=(v??'').toString(); return /[",\n\r]/.test(v)? '"'+v.replace(/"/g,'""')+'"' : v; };
+      return rows.map(r=>r.map(esc).join(',')).join('\\n');
+    }
+    function download(filename, text){
+      const blob=new Blob([text],{type:'text/csv;charset=utf-8;'});
+      const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=filename; a.click(); URL.revokeObjectURL(url);
+    }
+
+    function fmtTime(sec){ const m=Math.floor(sec/60).toString().padStart(2,'0'); const s=Math.floor(sec%60).toString().padStart(2,'0'); return m+':'+s; }
+    const KEY_FC='flashcards:deck', KEY_QZ='quiz:deck';
+
+    // File name indicators (for iPad UX)
+    byId('fc-file').addEventListener('change',()=>{ const f=byId('fc-file').files?.[0]; byId('fc-name').textContent = f? f.name+' ('+f.size+' bytes)' : 'No file chosen'; });
+    byId('qz-file').addEventListener('change',()=>{ const f=byId('qz-file').files?.[0]; byId('qz-name').textContent = f? f.name+' ('+f.size+' bytes)' : 'No file chosen'; });
+
+    // KPIs
+    function refreshKPIs(){
+      const fc=JSON.parse(localStorage.getItem(KEY_FC)||'[]');
+      const qz=JSON.parse(localStorage.getItem(KEY_QZ)||'[]');
+      byId('fc-count').textContent=fc.length; byId('qz-count').textContent=qz.length;
+      const fcm=byId('fc-manage-count'); if(fcm) fcm.textContent=fc.length;
+      const qzm=byId('qz-manage-count'); if(qzm) qzm.textContent=qz.length;
+    }
+
+    // Flashcards
+    let fcDeck=[], fcIndex=0, fcShowFront=true;
+    function loadFcDeck(){ fcDeck=JSON.parse(localStorage.getItem(KEY_FC)||'[]'); fcIndex=0; fcShowFront=true; const t=byId('fc-total'), i=byId('fc-idx'); if(t) t.textContent=fcDeck.length; if(i) i.textContent=fcDeck.length?1:0; renderFcCard(); }
+    function renderFcCard(){ const card=byId('fc-card'); if(!card) return; if(!fcDeck.length){ card.textContent='No cards. Upload on the Data page.'; return; } const item=fcDeck[fcIndex]; card.textContent= fcShowFront ? (item.term||'') : (item.def||''); const t=byId('fc-total'), i=byId('fc-idx'); if(t) t.textContent=fcDeck.length; if(i) i.textContent=fcIndex+1; }
+    document.addEventListener('click',(e)=>{
+      if(e.target.id==='fc-card'){ fcShowFront=!fcShowFront; renderFcCard(); }
+      if(e.target.id==='fc-next'){ if(!fcDeck.length) return; fcIndex=(fcIndex+1)%fcDeck.length; fcShowFront=true; renderFcCard(); }
+      if(e.target.id==='fc-prev'){ if(!fcDeck.length) return; fcIndex=(fcIndex-1+fcDeck.length)%fcDeck.length; fcShowFront=true; renderFcCard(); }
+      if(e.target.id==='fc-shuffle'){ if(!fcDeck.length) return; fcDeck = fcDeck.slice(); // copy before shuffle
+        for(let i=fcDeck.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[fcDeck[i],fcDeck[j]]=[fcDeck[j],fcDeck[i]];}
+        fcIndex=0; fcShowFront=true; renderFcCard();
+      }
+    });
+
+    // Quiz
+    let qzDeck=[], qzIndex=0;
+    function loadQzDeck(){ qzDeck=JSON.parse(localStorage.getItem(KEY_QZ)||'[]'); qzIndex=0; const t=byId('qz-total'), i=byId('qz-idx'); if(t) t.textContent=qzDeck.length; if(i) i.textContent=qzDeck.length?1:0; }
+    function renderQuizItem(){
+      loadQzDeck();
+      const q=qzDeck[qzIndex], qEl=byId('qz-question'), cEl=byId('qz-choices'), fb=byId('qz-feedback');
+      if(!qEl||!cEl||!fb) return; qEl.innerHTML=''; cEl.innerHTML=''; fb.className='hidden'; fb.textContent='';
+      if(!qzDeck.length){ qEl.innerHTML='<div class="muted">No quiz items. Upload on the Data page.</div>'; return; }
+      qEl.textContent=q.question||'';
+      ['A','B','C','D'].forEach(letter=>{
+        const div=document.createElement('div'); div.className='choice'; div.innerHTML=`<strong>${letter}.</strong> ${q['option'+letter]??''}`;
+        div.addEventListener('click',()=>{
+          const correct=(q.answer||'').toUpperCase().trim()===letter;
+          $$('.choice').forEach(x=>x.classList.remove('correct','wrong'));
+          div.classList.add(correct?'correct':'wrong');
+          fb.className='toast '+(correct?'ok':'bad');
+          const base= correct? 'Correct!' : `Incorrect. Correct answer: ${q.answer?.toUpperCase?.()||''}`;
+          fb.textContent= q.rationale ? base + ' — ' + q.rationale : base;
+        });
+        cEl.appendChild(div);
+      });
+      const t=byId('qz-total'), i=byId('qz-idx'); if(t) t.textContent=qzDeck.length; if(i) i.textContent=qzIndex+1;
+    }
+    document.addEventListener('click',(e)=>{
+      if(e.target.id==='qz-next'){ if(!qzDeck.length) return; qzIndex=(qzIndex+1)%qzDeck.length; renderQuizItem(); }
+      if(e.target.id==='qz-prev'){ if(!qzDeck.length) return; qzIndex=(qzIndex-1+qzDeck.length)%qzDeck.length; renderQuizItem(); }
+      if(e.target.id==='qz-shuffle'){ if(!qzDeck.length) return; qzDeck = qzDeck.slice(); for(let i=qzDeck.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[qzDeck[i],qzDeck[j]]=[qzDeck[j],qzDeck[i]];} qzIndex=0; renderQuizItem(); }
+    });
+
+    // SAFMEDS (uses Flashcards deck)
+    let sfDeck=[], sfIndex=0, sfTimer=null, sfRemaining=0, sfSeen=0, sfCorrect=0, sfWrong=0, sfFront=true;
+    function resetSafmeds(){ sfDeck=JSON.parse(localStorage.getItem(KEY_FC)||'[]').slice(); sfIndex=0; sfFront=true; sfSeen=0; sfCorrect=0; sfWrong=0; sfRemaining=0;
+      if(sfTimer){ clearInterval(sfTimer); sfTimer=null; }
+      byId('sf-time').textContent=fmtTime(0);
+      byId('sf-card').textContent= sfDeck.length? 'Click Start' : 'No flashcards loaded.';
+      byId('sf-seen').textContent=sfSeen; byId('sf-correct').textContent=sfCorrect; byId('sf-wrong').textContent=sfWrong;
+      const r=byId('sf-result'); r.className='hidden'; r.textContent='';
+    }
+    function renderSfCard(){ const card=byId('sf-card'); if(!card) return; if(!sfDeck.length){ card.textContent='No flashcards loaded.'; return; } const item=sfDeck[sfIndex]; card.textContent = sfFront ? (item.term||'') : (item.def||''); }
+    document.addEventListener('click',(e)=>{
+      if(e.target.id==='sf-card'){ if(!sfDeck.length || sfRemaining<=0) return; sfFront=!sfFront; renderSfCard(); }
+      if(e.target.id==='sf-correct-btn'){ if(sfRemaining<=0||!sfDeck.length) return; sfCorrect++; byId('sf-correct').textContent=sfCorrect; sfNext(); }
+      if(e.target.id==='sf-wrong-btn'){ if(sfRemaining<=0||!sfDeck.length) return; sfWrong++; byId('sf-wrong').textContent=sfWrong; sfNext(); }
+      if(e.target.id==='sf-skip-btn'){ if(sfRemaining<=0||!sfDeck.length) return; sfNext(); }
+      if(e.target.id==='sf-reset'){ resetSafmeds(); }
+      if(e.target.id==='sf-start'){
+        if(!sfDeck.length){ alert('Load Flashcards deck first (Data page).'); return; }
+        resetSafmeds();
+        const secs=parseInt(byId('sf-duration').value,10)||60;
+        sfRemaining=secs; byId('sf-time').textContent=fmtTime(sfRemaining); renderSfCard();
+        sfTimer=setInterval(()=>{ sfRemaining--; byId('sf-time').textContent=fmtTime(sfRemaining); if(sfRemaining<=0){ endSafmeds(); } },1000);
+      }
+    });
+    function sfNext(){ if(!sfDeck.length) return; sfIndex=(sfIndex+1)%sfDeck.length; sfFront=true; sfSeen++; byId('sf-seen').textContent=sfSeen; renderSfCard(); }
+    function endSafmeds(){ if(sfTimer){ clearInterval(sfTimer); sfTimer=null; } const total=sfCorrect+sfWrong, acc= total? Math.round((sfCorrect/total)*100):0; const res=byId('sf-result'); res.className='toast ok'; res.textContent=`Time! ✔ ${sfCorrect} • ✖ ${sfWrong} • Accuracy ${acc}% • Seen ${sfSeen}`; }
+
+    // Upload & Download
+    async function readFileText(input){
+      try{
+        const f=input.files?.[0];
+        if(!f) return null;
+        // On iPad, reading as text is fine
+        let text = await f.text();
+        return stripBOM(text);
+      }catch(err){
+        console.error(err);
+        alert('Could not read the file. Please try again or reselect it.');
+        return null;
+      }
+    }
+
+    function renderPreviews(){
+      const fc=JSON.parse(localStorage.getItem(KEY_FC)||'[]');
+      const fcTable=byId('fc-preview'); if(fcTable){ fcTable.innerHTML=''; const head=document.createElement('tr'); ['term','def','domain'].forEach(h=>{ const th=document.createElement('th'); th.textContent=h; head.appendChild(th); }); fcTable.appendChild(head); fc.slice(0,10).forEach(r=>{ const tr=document.createElement('tr'); ['term','def','domain'].forEach(k=>{ const td=document.createElement('td'); td.textContent=r[k]??''; tr.appendChild(td); }); fcTable.appendChild(tr); }); }
+      const qz=JSON.parse(localStorage.getItem(KEY_QZ)||'[]');
+      const qzTable=byId('qz-preview'); if(qzTable){ qzTable.innerHTML=''; const head2=document.createElement('tr'); ['question','optionA','optionB','optionC','optionD','answer','rationale'].forEach(h=>{ const th=document.createElement('th'); th.textContent=h; head2.appendChild(th); }); qzTable.appendChild(head2); qz.slice(0,10).forEach(r=>{ const tr=document.createElement('tr'); ['question','optionA','optionB','optionC','optionD','answer','rationale'].forEach(k=>{ const td=document.createElement('td'); td.textContent=r[k]??''; tr.appendChild(td); }); qzTable.appendChild(tr); }); }
+      refreshKPIs();
+    }
+
+    document.addEventListener('click', async (e)=>{
+      if(e.target.id==='fc-load'){
+        const input=byId('fc-file'); const text=await readFileText(input);
+        if(text==null){ alert('Tap “Choose CSV”, select a file, then tap “Upload CSV”.'); return; }
+        const rows=csvParse(text); if(!rows.length){ alert('No rows found in CSV.'); return; }
+        const [head,...body]=rows;
+        const idx={term:head.indexOf('term'), def:head.indexOf('def'), domain:head.indexOf('domain')};
+        if(idx.term===-1 || idx.def===-1){ alert('CSV must include headers: term,def (optional: domain).'); return; }
+        const deck=body.map(r=>({term:r[idx.term]||'', def:r[idx.def]||'', domain: idx.domain>=0? (r[idx.domain]||'') : ''}));
+        localStorage.setItem(KEY_FC, JSON.stringify(deck));
+        alert('Flashcards deck saved.');
+        renderPreviews();
+      }
+      if(e.target.id==='fc-save'){
+        const deck=JSON.parse(localStorage.getItem(KEY_FC)||'[]');
+        const rows=[['term','def','domain'], ...deck.map(d=>[d.term||'',d.def||'',d.domain||''])];
+        download('flashcards_deck.csv', toCSV(rows));
+      }
+      if(e.target.id==='qz-load'){
+        const input=byId('qz-file'); const text=await readFileText(input);
+        if(text==null){ alert('Tap “Choose CSV”, select a file, then tap “Upload CSV”.'); return; }
+        const rows=csvParse(text); if(!rows.length){ alert('No rows found in CSV.'); return; }
+        const [head,...body]=rows;
+        const need=['question','optionA','optionB','optionC','optionD','answer','rationale'];
+        const idx=Object.fromEntries(need.map(h=>[h, head.indexOf(h)]));
+        if(need.some(h=>idx[h]===-1)){ alert('CSV must include headers: '+need.join(',')); return; }
+        const deck=body.map(r=>{ const obj={}; need.forEach(h=>obj[h]=r[idx[h]]||''); return obj; });
+        localStorage.setItem(KEY_QZ, JSON.stringify(deck));
+        alert('Quiz deck saved.');
+        renderPreviews();
+      }
+      if(e.target.id==='qz-save'){
+        const deck=JSON.parse(localStorage.getItem(KEY_QZ)||'[]');
+        const head=['question','optionA','optionB','optionC','optionD','answer','rationale'];
+        const rows=[head, ...deck.map(d=>head.map(h=>d[h]||''))];
+        download('quiz_deck.csv', toCSV(rows));
+      }
+    });
+  </script>
+</body>
+</html>

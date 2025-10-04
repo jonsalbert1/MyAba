@@ -65,18 +65,18 @@
     .toast.bad{background:#fef2f2;color:#991b1b;border:1px solid #fecaca}
   
   /* ===== Data preview layout (Flash above Quiz) ===== */
-  #data { display: grid; gap: 12px; }
+  #data-previews { display: grid; gap: 12px; }
   @media (min-width: 1024px) {
-    #data {
+    #data-previews {
       grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-      height: calc(100vh - 120px); /* adjust based on header height */
+      height: calc(100vh - 120px);
     }
   }
   .preview-card {
     background: #fff;
     border: 1px solid #e5e7eb;
     border-radius: 12px;
-    box-shadow: var(--shadow);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
     overflow: hidden;
   }
   .preview-header {
@@ -100,12 +100,12 @@
   @media (max-width: 992px)  { .col-optionD { display: none; } }
   @media (max-width: 768px)  { .col-optionC { display: none; } }
 
-  /* Mobile: turn rows into blocks with labels */
+  /* Mobile: block rows with labels */
   @media (max-width: 640px) {
     .table thead { display: none; }
-    .table tr      { display: block; padding: 8px 6px; border-bottom: 1px solid #eee; }
-    .table td      { display: grid; grid-template-columns: 120px 1fr; gap: 8px;
-                     white-space: normal; overflow: visible; text-overflow: initial; }
+    .table tr { display: block; padding: 8px 6px; border-bottom: 1px solid #eee; }
+    .table td { display: grid; grid-template-columns: 120px 1fr; gap: 8px;
+                white-space: normal; overflow: visible; text-overflow: initial; }
     .table td::before { content: attr(data-label); font-weight: 600; color: #475569; }
   }
 
@@ -257,7 +257,7 @@
       </div>
     </div>
     
-<section id="data" aria-label="Dataset previews">
+<section id="data-previews" aria-label="Dataset previews">
   <!-- FLASH PREVIEW -->
   <div id="flash-preview" class="preview-card">
     <div class="preview-header">
@@ -272,7 +272,7 @@
             <th>Definition</th>
           </tr>
         </thead>
-        <tbody><!-- rows injected by JS --></tbody>
+        <tbody></tbody>
       </table>
     </div>
   </div>
@@ -297,7 +297,7 @@
             <th class="col-rationale">Rationale</th>
           </tr>
         </thead>
-        <tbody><!-- rows injected by JS --></tbody>
+        <tbody></tbody>
       </table>
     </div>
   </div>
@@ -558,19 +558,18 @@ function renderFlashPreview(flashDeck = []) {
   const countEl = document.getElementById('flash-count');
   if (!tbody) return;
   tbody.innerHTML = '';
-  flashDeck.slice(0, MAX_PREVIEW_ROWS).forEach(r => {
+  (flashDeck || []).slice(0, MAX_PREVIEW_ROWS).forEach(r => {
     const tr = document.createElement('tr');
     const tdTerm = document.createElement('td');
     const tdDef  = document.createElement('td');
-    tdTerm.textContent = r.term ?? '';
-    tdDef.textContent  = r.def ?? '';
-    // mobile labels
+    tdTerm.textContent = (r?.term ?? '').toString();
+    tdDef.textContent  = (r?.def  ?? '').toString();
     tdTerm.setAttribute('data-label', 'Term');
     tdDef.setAttribute('data-label', 'Definition');
     tr.append(tdTerm, tdDef);
     tbody.appendChild(tr);
   });
-  if (countEl) countEl.textContent = `${flashDeck.length} item${flashDeck.length === 1 ? '' : 's'}`;
+  if (countEl) countEl.textContent = `${(flashDeck||[]).length} item${(flashDeck||[]).length === 1 ? '' : 's'}`;
 }
 
 function renderQuizPreview(quizDeck = []) {
@@ -587,35 +586,32 @@ function renderQuizPreview(quizDeck = []) {
     return cell;
   };
 
-  quizDeck.slice(0, MAX_PREVIEW_ROWS).forEach(r => {
+  (quizDeck || []).slice(0, MAX_PREVIEW_ROWS).forEach(r => {
     const tr = document.createElement('tr');
     tr.append(
-      addCell(r.domain,   'Domain'),
-      addCell(r.question, 'Question'),
-      addCell(r.optionA,  'A', 'col-optionA'),
-      addCell(r.optionB,  'B', 'col-optionB'),
-      addCell(r.optionC,  'C', 'col-optionC'),
-      addCell(r.optionD,  'D', 'col-optionD'),
-      addCell(r.answer,   'Answer'),
-      addCell(r.rationale,'Rationale','col-rationale'),
+      addCell(r?.domain,   'Domain'),
+      addCell(r?.question, 'Question'),
+      addCell(r?.a ?? r?.optionA,  'A', 'col-optionA'),
+      addCell(r?.b ?? r?.optionB,  'B', 'col-optionB'),
+      addCell(r?.c ?? r?.optionC,  'C', 'col-optionC'),
+      addCell(r?.d ?? r?.optionD,  'D', 'col-optionD'),
+      addCell(r?.answer,   'Answer'),
+      addCell(r?.rationale,'Rationale','col-rationale')
     );
     tbody.appendChild(tr);
   });
-  if (countEl) countEl.textContent = `${quizDeck.length} item${quizDeck.length === 1 ? '' : 's'}`;
+  if (countEl) countEl.textContent = `${(quizDeck||[]).length} item${(quizDeck||[]).length === 1 ? '' : 's'}`;
 }
 
+
 function renderPreviews(){
-  const fc = JSON.parse(localStorage.getItem(KEY_FC)||'[]');
-  const qz = JSON.parse(localStorage.getItem(KEY_QZ)||'[]');
+  const fc = JSON.parse(localStorage.getItem(KEY_FC) || '[]');
+  const qz = JSON.parse(localStorage.getItem(KEY_QZ) || '[]');
   renderFlashPreview(fc);
   renderQuizPreview(qz);
   refreshKPIs();
 }
-); fcTable.appendChild(head); (fc||[]).slice(0,10).forEach(r=>{ const tr=document.createElement('tr'); ['term','def','domain'].forEach(k=>{ const td=document.createElement('td'); td.textContent=(r[k]??'').toString(); tr.appendChild(td); }); fcTable.appendChild(tr); }); }
-      const qz=JSON.parse(localStorage.getItem(KEY_QZ)||'[]');
-      const qzTable=byId('qz-preview'); if(qzTable){ qzTable.innerHTML=''; const head2=document.createElement('tr'); ['domain','question','optionA','optionB','optionC','optionD','answer','rationale'].forEach(h=>{ const th=document.createElement('th'); th.textContent=h; head2.appendChild(th); }); qzTable.appendChild(head2); (qz||[]).slice(0,10).forEach(r=>{ const tr=document.createElement('tr'); ['domain','question','optionA','optionB','optionC','optionD','answer','rationale'].forEach(k=>{ const td=document.createElement('td'); td.textContent=(r[k]??'').toString(); tr.appendChild(td); }); qzTable.appendChild(tr); }); }
-      refreshKPIs();
-    }
+
     document.addEventListener('click', async (e)=>{
       if(e.target.id==='fc-load'){
         const input=byId('fc-file'); const text=await readFileText(input);

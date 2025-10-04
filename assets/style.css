@@ -1,0 +1,47 @@
+
+:root{
+  --bg:#f8fafc; --card:#ffffff; --border:#e5e7eb; --muted:#64748b; --text:#0f172a;
+  --brand:#0ea5e9; --brand-2:#0284c7; --shadow:0 1px 3px rgba(0,0,0,.06);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;font-family:Inter,system-ui,Arial,sans-serif;background:var(--bg);color:var(--text);}
+a{color:var(--brand);text-decoration:none}
+a:hover{text-decoration:underline}
+.container{max-width:1100px;margin:0 auto;padding:20px}
+.nav{
+  position:sticky;top:0;z-index:50;background:#fff;border-bottom:1px solid var(--border);
+}
+.nav-inner{display:flex;gap:14px;align-items:center;justify-content:space-between;padding:12px 20px;}
+.nav a{padding:8px 10px;border-radius:10px}
+.nav a.active{background:#e0f2fe;color:#075985;text-decoration:none}
+.grid{display:grid;gap:16px}
+.card{
+  background:var(--card);border:1px solid var(--border);border-radius:14px;
+  box-shadow:var(--shadow);padding:16px;
+}
+h1{font-size:28px;margin:0 0 8px}
+h2{font-size:20px;margin:0 0 8px}
+h3{font-size:16px;margin:0 0 8px}
+.muted{color:var(--muted)}
+.btn{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);background:#fff;padding:8px 12px;border-radius:10px;cursor:pointer}
+.btn:hover{border-color:#cbd5e1}
+.table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:14px}
+.table th,.table td{padding:8px;border-bottom:1px solid #eef2f7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.table thead th{position:sticky;top:0;background:#f8fafc;z-index:1}
+#data-previews{display:grid;gap:12px}
+@media(min-width:1024px){#data-previews{grid-template-rows:minmax(0,1fr) minmax(0,1fr);height:calc(100vh - 140px)}}
+.preview-card{background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow);overflow:hidden}
+.preview-header{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid #f1f5f9}
+.preview-body{max-height:42vh;overflow:auto}
+/* Quiz responsive cols */
+@media(max-width:1200px){.col-rationale{display:none}}
+@media(max-width:992px){.col-optionD{display:none}}
+@media(max-width:768px){.col-optionC{display:none}}
+@media(max-width:640px){
+  .table thead{display:none}
+  .table tr{display:block;padding:8px;border-bottom:1px solid #eee}
+  .table td{display:grid;grid-template-columns:120px 1fr;gap:8px;white-space:normal;overflow:visible;text-overflow:initial}
+  .table td::before{content:attr(data-label);font-weight:600;color:#475569}
+}
+footer{padding:30px 0;color:#94a3b8;text-align:center}

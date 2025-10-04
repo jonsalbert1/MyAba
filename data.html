@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'/>
+  <meta name='viewport' content='width=device-width, initial-scale=1'/>
+  <title>myABA • Data</title>
+  <link rel='stylesheet' href='/assets/style.css'/>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner container">
+    <div style="display:flex;align-items:center;gap:10px">
+      <a href="/" class="brand" style="font-weight:700;color:#0ea5e9">myABA</a>
+      <span class="muted">study suite</span>
+    </div>
+    <div style="display:flex;gap:6px">
+      <a href="/" >Home</a>
+      <a href="/flashcards.html" >Flashcards</a>
+      <a href="/safmeds.html" >SAFMEDS</a>
+      <a href="/quiz.html" >Quiz</a>
+      <a href="/data.html" class="active">Data</a>
+      <a href="/settings.html" >Settings</a>
+    </div>
+  </div>
+</nav>
+
+  <main class="container grid">
+    <section class="card">
+      <h1>Data</h1>
+      <p class="muted">Upload CSVs and preview decks. Database wiring comes next.</p>
+    </section>
+
+    <section class="card">
+      <h2>Upload</h2>
+      <div class="grid" style="grid-template-columns: repeat(auto-fit,minmax(240px,1fr));">
+        <div>
+          <h3>Flashcards</h3>
+          <input type="file" id="fc-file" accept=".csv"/>
+        </div>
+        <div>
+          <h3>Quiz</h3>
+          <input type="file" id="qz-file" accept=".csv"/>
+        </div>
+      </div>
+    </section>
+
+    <section id="data-previews">
+      <div class="preview-card">
+        <div class="preview-header">
+          <h3>Flashcards (preview)</h3><span class="muted" id="flash-count">0 items</span>
+        </div>
+        <div class="preview-body">
+          <table class="table" id="flash-table">
+            <thead><tr><th style="width:30%">Term</th><th>Definition</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="preview-card">
+        <div class="preview-header">
+          <h3>Quiz (preview)</h3><span class="muted" id="quiz-count">0 items</span>
+        </div>
+        <div class="preview-body">
+          <table class="table" id="quiz-table">
+            <thead>
+              <tr>
+                <th style="width:90px;">Domain</th>
+                <th>Question</th>
+                <th class="col-optionA" style="width:140px;">A</th>
+                <th class="col-optionB" style="width:140px;">B</th>
+                <th class="col-optionC" style="width:140px;">C</th>
+                <th class="col-optionD" style="width:140px;">D</th>
+                <th style="width:90px;">Answer</th>
+                <th class="col-rationale">Rationale</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer>© 2025 myABA</footer>
+  <script src="/assets/app.js"></script>
+  <script>
+    function parseCSV(text){
+      const [headerLine, ...lines]=text.trim().split(/\r?\n/);
+      const headers=headerLine.split(',').map(h=>h.trim());
+      return lines.map(line=>{
+        const cols=line.split(','); const obj={};
+        headers.forEach((h,i)=>obj[h]=cols[i]?.trim()??'');
+        return obj;
+      });
+    }
+
+    // Flashcards CSV: headers -> term,def
+    document.getElementById('fc-file').addEventListener('change', async (ev)=>{
+      const file=ev.target.files?.[0]; if(!file) return;
+      const text=await file.text(); const rows=parseCSV(text);
+      const deck=rows.map(r=>({term:r.term||r.Term||r.TERM, def:r.def||r.Definition||r.DEF})).filter(r=>r.term||r.def);
+      localStorage.setItem('flash:deck', JSON.stringify(deck));
+      renderFlashPreview(deck);
+      alert(`Loaded ${deck.length} flashcards.`);
+    });
+
+    // Quiz CSV: headers -> domain,question,optionA,optionB,optionC,optionD,answer,rationale
+    document.getElementById('qz-file').addEventListener('change', async (ev)=>{
+      const file=ev.target.files?.[0]; if(!file) return;
+      const text=await file.text(); const rows=parseCSV(text);
+      const deck=rows.map(r=>({
+        domain:r.domain||r.Domain,
+        question:r.question||r.Question,
+        optionA:r.a||r.A||r.optionA||r.OptionA,
+        optionB:r.b||r.B||r.optionB||r.OptionB,
+        optionC:r.c||r.C||r.optionC||r.OptionC,
+        optionD:r.d||r.D||r.optionD||r.OptionD,
+        answer:r.answer||r.Answer,
+        rationale:r.rationale||r.Rationale
+      })).filter(r=>r.question);
+      localStorage.setItem('quiz:deck', JSON.stringify(deck));
+      renderQuizPreview(deck);
+      alert(`Loaded ${deck.length} quiz items.`);
+    });
+
+    // Initial previews from localStorage
+    const decks = loadLocalDecks();
+    renderFlashPreview(decks.fc); renderQuizPreview(decks.qz);
+  </script>
+</body>
+</html>

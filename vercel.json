@@ -1,0 +1,28 @@
+{
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/flashcards",
+      "destination": "/flashcards.html"
+    },
+    {
+      "source": "/safmeds",
+      "destination": "/safmeds.html"
+    },
+    {
+      "source": "/quiz",
+      "destination": "/quiz.html"
+    },
+    {
+      "source": "/data",
+      "destination": "/data.html"
+    },
+    {
+      "source": "/settings",
+      "destination": "/settings.html"
+    }
+  ]
+}

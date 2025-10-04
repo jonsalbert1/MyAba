@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'/>
+  <meta name='viewport' content='width=device-width, initial-scale=1'/>
+  <title>myABA • Quiz</title>
+  <link rel='stylesheet' href='/assets/style.css'/>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner container">
+    <div style="display:flex;align-items:center;gap:10px">
+      <a href="/" class="brand" style="font-weight:700;color:#0ea5e9">myABA</a>
+      <span class="muted">study suite</span>
+    </div>
+    <div style="display:flex;gap:6px">
+      <a href="/" >Home</a>
+      <a href="/flashcards.html" >Flashcards</a>
+      <a href="/safmeds.html" >SAFMEDS</a>
+      <a href="/quiz.html" class="active">Quiz</a>
+      <a href="/data.html" >Data</a>
+      <a href="/settings.html" >Settings</a>
+    </div>
+  </div>
+</nav>
+
+  <main class="container grid">
+    <section class="card">
+      <h1>Quiz</h1>
+      <p class="muted">Answer and see rationales. Results will later save to the database.</p>
+    </section>
+
+    <section class="card" id="quiz-area">
+      <div id="q-txt" style="font-weight:600; margin-bottom:8px">Question</div>
+      <div class="grid" style="grid-template-columns:1fr; gap:8px">
+        <button class="btn" data-opt="A">A</button>
+        <button class="btn" data-opt="B">B</button>
+        <button class="btn" data-opt="C">C</button>
+        <button class="btn" data-opt="D">D</button>
+      </div>
+      <div id="q-feedback" class="card" style="margin-top:10px; background:#f1f5f9; display:none"></div>
+    </section>
+  </main>
+  <footer>© 2025 myABA</footer>
+  <script src="/assets/app.js"></script>
+  <script>
+    const st={i:0, deck:[]};
+    const elQ=document.getElementById('q-txt'), fb=document.getElementById('q-feedback');
+    function show(){
+      if(!st.deck.length) return;
+      const r=st.deck[st.i]; elQ.textContent = r.question||'';
+      document.querySelectorAll('[data-opt]').forEach(b=>{ b.textContent = b.getAttribute('data-opt')+': '+(r['option'+b.getAttribute('data-opt')]||''); });
+      fb.style.display='none'; fb.textContent='';
+    }
+    document.querySelectorAll('[data-opt]').forEach(b=>b.onclick=()=>{
+      if(!st.deck.length) return;
+      const r=st.deck[st.i]; const pick=b.getAttribute('data-opt');
+      const ok = (pick === (r.answer||'').toUpperCase());
+      fb.style.display='block'; fb.textContent = (ok?'✅ Correct! ':'❌ Incorrect. ') + (r.rationale||'');
+      st.i = (st.i+1)%st.deck.length; setTimeout(show, 900);
+    });
+    const decks = loadLocalDecks(); st.deck=decks.qz; show();
+  </script>
+</body>
+</html>

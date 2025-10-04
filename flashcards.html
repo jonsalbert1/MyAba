@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'/>
+  <meta name='viewport' content='width=device-width, initial-scale=1'/>
+  <title>myABA • Flashcards</title>
+  <link rel='stylesheet' href='/assets/style.css'/>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner container">
+    <div style="display:flex;align-items:center;gap:10px">
+      <a href="/" class="brand" style="font-weight:700;color:#0ea5e9">myABA</a>
+      <span class="muted">study suite</span>
+    </div>
+    <div style="display:flex;gap:6px">
+      <a href="/" >Home</a>
+      <a href="/flashcards.html" class="active">Flashcards</a>
+      <a href="/safmeds.html" >SAFMEDS</a>
+      <a href="/quiz.html" >Quiz</a>
+      <a href="/data.html" >Data</a>
+      <a href="/settings.html" >Settings</a>
+    </div>
+  </div>
+</nav>
+
+  <main class="container grid">
+    <section class="card">
+      <h1>Flashcards</h1>
+      <p class="muted">Load from <code>localStorage</code> or upload on the <a href="/data.html">Data</a> page.</p>
+    </section>
+
+    <section class="card" id="flash-area">
+      <div style="display:flex;gap:8px;align-items:center;justify-content:space-between">
+        <h2>Deck</h2>
+        <div>
+          <button class="btn" id="prev">Previous</button>
+          <button class="btn" id="flip">Flip</button>
+          <button class="btn" id="next">Next</button>
+        </div>
+      </div>
+      <div id="card" class="card" style="margin-top:12px;background:#f8fafc">
+        <div id="card-front"><strong>Term</strong><div id="term" style="margin-top:6px"></div></div>
+        <div id="card-back" style="display:none"><strong>Definition</strong><div id="def" style="margin-top:6px"></div></div>
+      </div>
+    </section>
+  </main>
+  <footer>© 2025 myABA</footer>
+  <script src="/assets/app.js"></script>
+  <script>
+    const state={i:0, side:'front', deck:[]};
+    const elT=document.getElementById('term'), elD=document.getElementById('def');
+    const elFront=document.getElementById('card-front'), elBack=document.getElementById('card-back');
+    function show(){ if(!state.deck.length) return;
+      const r=state.deck[state.i];
+      elT.textContent=r.term||''; elD.textContent=r.def||'';
+      elFront.style.display = state.side==='front'?'block':'none';
+      elBack.style.display  = state.side==='back' ?'block':'none';
+    }
+    document.getElementById('prev').onclick=()=>{ if(!state.deck.length) return; state.i=(state.i-1+state.deck.length)%state.deck.length; state.side='front'; show(); };
+    document.getElementById('next').onclick=()=>{ if(!state.deck.length) return; state.i=(state.i+1)%state.deck.length; state.side='front'; show(); };
+    document.getElementById('flip').onclick=()=>{ if(!state.deck.length) return; state.side= state.side==='front'?'back':'front'; show(); };
+
+    const decks=loadLocalDecks(); state.deck=decks.fc; show();
+  </script>
+</body>
+</html>

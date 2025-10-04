@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'/>
+  <meta name='viewport' content='width=device-width, initial-scale=1'/>
+  <title>myABA • SAFMEDS</title>
+  <link rel='stylesheet' href='/assets/style.css'/>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner container">
+    <div style="display:flex;align-items:center;gap:10px">
+      <a href="/" class="brand" style="font-weight:700;color:#0ea5e9">myABA</a>
+      <span class="muted">study suite</span>
+    </div>
+    <div style="display:flex;gap:6px">
+      <a href="/" >Home</a>
+      <a href="/flashcards.html" >Flashcards</a>
+      <a href="/safmeds.html" class="active">SAFMEDS</a>
+      <a href="/quiz.html" >Quiz</a>
+      <a href="/data.html" >Data</a>
+      <a href="/settings.html" >Settings</a>
+    </div>
+  </div>
+</nav>
+
+  <main class="container grid">
+    <section class="card">
+      <h1>SAFMEDS</h1>
+      <p class="muted">Timed fluency practice. Results will later save to the database.</p>
+    </section>
+
+    <section class="card">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <label>Duration:
+          <select id="dur">
+            <option value="30">30s</option>
+            <option value="60">60s</option>
+            <option value="120">120s</option>
+          </select>
+        </label>
+        <button class="btn" id="start">Start</button>
+        <div class="muted" id="timer">00:00</div>
+      </div>
+      <div id="saf-card" class="card" style="margin-top:12px;background:#f8fafc">
+        <div><strong id="sf-term">Term</strong></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn" id="correct">Correct</button>
+        <button class="btn" id="wrong">Wrong</button>
+      </div>
+      <div class="muted" id="score" style="margin-top:8px">0 correct • 0 wrong</div>
+    </section>
+  </main>
+  <footer>© 2025 myABA</footer>
+  <script src="/assets/app.js"></script>
+  <script>
+    const st={deck:[],i:0,correct:0,wrong:0,remaining:0,tid:null};
+    const t=document.getElementById('timer'), sc=document.getElementById('score'), term=document.getElementById('sf-term');
+    function fmt(s){ const m=Math.floor(s/60), ss=String(s%60).padStart(2,'0'); return m+":"+ss; }
+    function updateScore(){ sc.textContent = st.correct+" correct • "+st.wrong+" wrong"; }
+    function nextCard(){ if(!st.deck.length) return; term.textContent = st.deck[st.i].term||''; st.i=(st.i+1)%st.deck.length; }
+    function tick(){
+      st.remaining--; t.textContent = fmt(st.remaining);
+      if(st.remaining<=0){ clearInterval(st.tid); st.tid=null; alert("Time!\nCorrect: "+st.correct+"\nWrong: "+st.wrong); }
+    }
+    document.getElementById('start').onclick=()=>{
+      const dur=parseInt(document.getElementById('dur').value,10);
+      const decks=loadLocalDecks(); st.deck=decks.fc;
+      st.i=0; st.correct=0; st.wrong=0; st.remaining=dur; updateScore(); nextCard();
+      t.textContent=fmt(st.remaining); if(st.tid) clearInterval(st.tid); st.tid=setInterval(tick,1000);
+    };
+    document.getElementById('correct').onclick=()=>{ st.correct++; updateScore(); nextCard(); };
+    document.getElementById('wrong').onclick=()=>{ st.wrong++; updateScore(); nextCard(); };
+  </script>
+</body>
+</html>

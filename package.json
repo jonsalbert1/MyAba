@@ -1,0 +1,10 @@
+{
+  "name": "myaba-static",
+  "private": true,
+  "version": "1.0.0",
+  "description": "myABA multi-page static site with Vercel serverless APIs",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@vercel/postgres": "latest"
+  }
+}

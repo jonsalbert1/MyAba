@@ -1,28 +1,7 @@
 {
   "rewrites": [
-    {
-      "source": "/",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/flashcards",
-      "destination": "/flashcards.html"
-    },
-    {
-      "source": "/safmeds",
-      "destination": "/safmeds.html"
-    },
-    {
-      "source": "/quiz",
-      "destination": "/quiz.html"
-    },
-    {
-      "source": "/data",
-      "destination": "/data.html"
-    },
-    {
-      "source": "/settings",
-      "destination": "/settings.html"
-    }
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/", "destination": "/index.html" },
+    { "source": "/(flashcards|safmeds|quiz|data|settings)", "destination": "/$1.html" }
   ]
 }

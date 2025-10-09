@@ -1,7 +1,23 @@
 {
   "name": "myaba",
+  "version": "1.0.0",
   "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
   "dependencies": {
-    "pg": "latest"
+    "@supabase/supabase-js": "^2.74.0",
+    "framer-motion": "^12.23.22",
+    "next": "^14.2.33",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "recharts": "^3.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.6.2",
+    "@types/react": "19.2.0",
+    "typescript": "5.9.3"
   }
 }

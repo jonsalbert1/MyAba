@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>SAFMEDS</title>
+  <link rel="stylesheet" href="/nav.css" />
+  <style>
+    :root{
+      --bg:#f7f8fb; --card:#ffffff; --ink:#0f172a; --muted:#64748b; --border:#e5e7eb; --soft:#f1f5f9;
+      --btn-bg:#ffffff; --btn-bd:#e5e7eb; --btn-shadow:0 1px 0 rgba(0,0,0,.05), 0 6px 22px rgba(2,6,23,.06);
+      --ok:#22c55e; --bad:#ef4444; --rate:#1d4ed8; --radius:14px; --shadow:0 10px 30px rgba(15,23,42,.08);
+    }
+    *{box-sizing:border-box} html,body{height:100%}
+    body{margin:0; background:var(--bg); color:var(--ink); font-family:Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;}
+
+    .container{width:min(1100px,92vw); margin:24px auto 40px}
+    .controls{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px}
+    .btn, select, label.switch{ background:var(--btn-bg); border:1px solid var(--btn-bd); border-radius:12px; padding:8px 12px; font-weight:600; color:#0b1730; box-shadow:var(--btn-shadow); cursor:pointer; }
+    select{cursor:pointer}
+
+    .wrap{background:var(--card); border:1px solid var(--border); border-radius:22px; box-shadow:var(--shadow); padding:20px}
+    .cardShelf{ background:var(--card); border:1px solid var(--border); border-radius:22px; box-shadow:var(--shadow); padding:16px; margin-bottom:8px; }
+    .cardBox{ background:var(--soft); border:1px solid var(--border); border-radius:var(--radius); height:260px; display:flex; align-items:center; justify-content:center; color:#1f2937; }
+    .flipzone{perspective:1000px; width:100%; height:100%; display:flex; align-items:center; justify-content:center}
+    .inner{ position:relative; width:86%; height:70%; transform-style:preserve-3d; transition: transform .5s cubic-bezier(.2,.8,.2,1); cursor:pointer; outline:none; }
+    .inner.flipped{ transform: rotateY(180deg); }
+    .face{ position:absolute; inset:0; backface-visibility:hidden; background:var(--soft); border:1px solid var(--border); border-radius: var(--radius); display:flex; align-items:center; justify-content:center; padding:18px; color:#1f2937; }
+    .front .term{ font-weight:800; font-size:28px; letter-spacing:.3px; text-align:center; padding:0 16px}
+    .domain{ position:absolute; top:10px; left:12px; font-size:12px; color:#475569 }
+    .back{ transform: rotateY(180deg); }
+    .back .def{ font-size:18px; line-height:1.45; text-align:center; padding:0 16px }
+
+    .meta{display:flex; justify-content:space-between; align-items:center; margin:10px 0 0; color:#475569}
+    .footer{display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-top:18px}
+    .panel{background:var(--card); border:1px solid var(--border); border-radius:22px; box-shadow:var(--shadow); padding:16px 18px}
+    .panel h3{margin:0 0 12px; font-size:16px}
+    .stats{display:flex; gap:14px; align-items:center; flex-wrap:wrap}
+    .pill{ display:inline-flex; align-items:center; gap:8px; border:1px solid var(--border); background:#fff; border-radius:12px; padding:10px 14px; font-weight:700 }
+    .pill .dot{width:10px; height:10px; border-radius:999px}
+    .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)} .dot.neutral{background:#94a3b8}
+    .legend{display:flex; gap:12px; align-items:center; color:#64748b; font-size:12px; margin-bottom:8px}
+    .swatch{width:10px; height:10px; border-radius:999px; display:inline-block}
+    @media (max-width: 860px){ .footer{grid-template-columns:1fr} }
+    canvas{width:100%; height:220px}
+  </style>
+</head>
+<body>
+  <!-- Dark blue nav -->
+  <header class="site-nav">
+    <div class="site-nav__inner">
+      <a class="site-nav__brand" href="/"><span class="site-nav__logo">ABA</span><span class="site-nav__name">Study Tools</span></a>
+      <nav class="site-nav__links" id="navLinks">
+        <a href="/flashcards.html">Flashcards</a>
+        <a href="/quiz.html">Quiz</a>
+        <a href="/safmeds.html">SAFMEDS</a>
+      </nav>
+      <button class="site-nav__menu" id="navToggle" aria-label="Menu">Menu</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="controls">
+      <select id="durationSel" aria-label="Duration">
+        <option value="30">30s</option>
+        <option value="60" selected>60s</option>
+        <option value="120">120s</option>
+      </select>
+      <button class="btn" id="startBtn">Start (Space)</button>
+      <button class="btn" id="pauseBtn">Pause</button>
+      <button class="btn" id="endBtn">End & Save</button>
+      <button class="btn" id="correctBtn">Correct (J)</button>
+      <button class="btn" id="missBtn">Missed (K)</button>
+      <button class="btn" id="skipBtn">Skip (→)</button>
+      <button class="btn" id="shuffleBtn">Shuffle</button>
+      <label class="switch" title="Recycle misses to the back of the deck">
+        <input type="checkbox" id="recycle" checked/> Recycle misses
+      </label>
+      <div id="progress">0 / 0</div><div id="time" style="font-weight:800">01:00</div>
+    </div>
+
+    <section class="wrap">
+      <div class="cardShelf">
+        <div class="cardBox">
+          <div class="flipzone">
+            <div id="cardInner" class="inner" aria-live="polite">
+              <div class="face front">
+                <div class="domain" id="domainEl"></div>
+                <div class="term" id="termEl">TERM</div>
+              </div>
+              <div class="face back">
+                <div class="def" id="defEl">DEFINITION</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="meta"><span>Tip: click the card to flip the definition</span></div>
+      </div>
+
+      <div class="footer">
+        <div class="panel">
+          <h3>Session</h3>
+          <div class="stats">
+            <span class="pill"><span class="dot ok"></span> Correct: <span id="sCorrect">0</span></span>
+            <span class="pill"><span class="dot bad"></span> Missed: <span id="sMiss">0</span></span>
+            <span class="pill"><span class="dot neutral"></span> Net: <span id="sNet">0</span></span>
+            <span class="pill">Rate: <span id="sRate">0</span> / min</span>
+            <button class="btn" id="resetBtn">Reset</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Last result</h3>
+          <div class="stats">
+            <span class="pill">Item: <span id="lastItem">—</span></span>
+            <span class="pill">Result: <span id="lastResult">—</span></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:18px">
+        <div class="legend">
+          <span class="swatch" style="background:#22c55e"></span> Correct
+          <span class="swatch" style="background:#ef4444"></span> Missed
+          <span class="swatch" style="background:#1d4ed8"></span> Rate (/min)
+        </div>
+        <canvas id="historyChart"></canvas>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // --- (same SAFMEDS logic you already have: flip, timer, save sessions, chart) ---
+    const inner    = document.getElementById('cardInner');
+    const termEl   = document.getElementById('termEl');
+    const defEl    = document.getElementById('defEl');
+    const domainEl = document.getElementById('domainEl');
+    const progressEl = document.getElementById('progress');
+    const timeEl     = document.getElementById('time');
+
+    const durationSel = document.getElementById('durationSel');
+    const startBtn = document.getElementById('startBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const endBtn = document.getElementById('endBtn');
+    const correctBtn = document.getElementById('correctBtn');
+    const missBtn = document.getElementById('missBtn');
+    const skipBtn = document.getElementById('skipBtn');
+    const shuffleBtn = document.getElementById('shuffleBtn');
+    const recycleChk = document.getElementById('recycle');
+    const resetBtn = document.getElementById('resetBtn');
+
+    const sCorrect = document.getElementById('sCorrect');
+    const sMiss = document.getElementById('sMiss');
+    const sNet = document.getElementById('sNet');
+    const sRate = document.getElementById('sRate');
+    const lastItem = document.getElementById('lastItem');
+    const lastResult = document.getElementById('lastResult');
+
+    const histCanvas = document.getElementById('historyChart');
+    const hctx = histCanvas.getContext('2d');
+    let history = [];
+
+    let deck = []; let idx = 0; let flipped=false;
+    let running=false; let startTs=0; let leftMs=60000; let timerId=null;
+    let nCorrect=0, nMiss=0; let sessionBeganAt=null;
+
+    const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    const fmt = ms => { const t=Math.max(0,Math.round(ms/1000)); const m=String(Math.floor(t/60)).padStart(2,'0'); const s=String(t%60).padStart(2,'0'); return `${m}:${s}`; };
+
+    function setFlip(on){ flipped=!!on; inner.classList.toggle('flipped', flipped); }
+    function updateUI(){
+      progressEl.textContent = `${Math.min(idx+1, Math.max(deck.length,1))} / ${deck.length}`;
+      timeEl.textContent = fmt(leftMs);
+      sCorrect.textContent = nCorrect; sMiss.textContent=nMiss; sNet.textContent=nCorrect-nMiss;
+      const durMin = Math.max(1/60, (Number(durationSel.value)||60)/60); sRate.textContent = Math.round(nCorrect/durMin);
+      const row = deck[idx] || {};
+      termEl.textContent = esc(row.term||''); defEl.textContent = esc(row.def||''); domainEl.textContent = row.domain?esc(row.domain):'';
+      setFlip(flipped);
+    }
+    function shuffleDeck(){ for(let i=deck.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [deck[i],deck[j]]=[deck[j],deck[i]]; } idx=0; setFlip(false); updateUI(); }
+    function start(){ if(!deck.length||running) return; running=true; sessionBeganAt=new Date(); startTs=performance.now(); const tick=()=>{ const now=performance.now(); const e=now-startTs; startTs=now; leftMs-=e; if(leftMs<=0){ leftMs=0; updateUI(); stop(); endAndSave(); return; } updateUI(); timerId=requestAnimationFrame(tick); }; timerId=requestAnimationFrame(tick); }
+    function stop(){ running=false; if(timerId){ cancelAnimationFrame(timerId); timerId=null; } }
+    function resetSession(){ stop(); nCorrect=0; nMiss=0; leftMs=(Number(durationSel.value)||60)*1000; idx=0; setFlip(false); updateUI(); lastItem.textContent='—'; lastResult.textContent='—'; }
+    function nextItem(){ if(!deck.length) return; idx=(idx+1)%deck.length; setFlip(false); updateUI(); }
+    function mark(result){ if(!deck.length) return; const current=deck[idx]; lastItem.textContent=current?.term||''; if(result==='correct'){ nCorrect++; lastResult.textContent='Correct'; nextItem(); } else { nMiss++; lastResult.textContent='Missed'; if(recycleChk.checked){ const [card]=deck.splice(idx,1); deck.push(card); } else { nextItem(); } } updateUI(); }
+
+    async function endAndSave(){
+      const duration=Number(durationSel.value)||60;
+      const payload={ durationSeconds:duration, correct:nCorrect, missed:nMiss, startedAt: sessionBeganAt?sessionBeganAt.toISOString():undefined };
+      try{ const r=await fetch('/api/safmeds-session',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}); if(r.ok) await loadHistory(); } catch{}
+      resetSession(); shuffleDeck();
+    }
+
+    function drawHistory(){
+      const DPR=window.devicePixelRatio||1; const w=histCanvas.clientWidth,h=histCanvas.clientHeight;
+      histCanvas.width=w*DPR; histCanvas.height=h*DPR; hctx.setTransform(DPR,0,0,DPR,0,0); hctx.clearRect(0,0,w,h);
+      const N=history.length; if(!N) return; const padL=40,padR=20,padT=20,padB=30; const plotW=w-padL-padR, plotH=h-padT-padB;
+      const maxCount=Math.max(1,...history.map(s=>Math.max(s.correct,s.missed))); const maxRate=Math.max(1,...history.map(s=>Number(s.rate_per_min)||0));
+      hctx.strokeStyle='#e5e7eb'; hctx.lineWidth=1; hctx.strokeRect(padL,padT,plotW,plotH);
+      const groupW=plotW/N;
+      for(let i=0;i<N;i++){ const s=history[i], x=padL+i*groupW, gap=6, wbar=(groupW-gap*3)/2;
+        const kH=plotH*(s.correct/maxCount); hctx.fillStyle='#22c55e'; hctx.fillRect(x+gap, padT+(plotH-kH), wbar, kH);
+        const mH=plotH*(s.missed/maxCount); hctx.fillStyle='#ef4444'; hctx.fillRect(x+gap*2+wbar, padT+(plotH-mH), wbar, mH);
+      }
+      hctx.strokeStyle='#1d4ed8'; hctx.lineWidth=2; hctx.beginPath();
+      for(let i=0;i<N;i++){ const s=history[i], cx=padL+i*groupW+groupW/2, cy=padT+(plotH-(plotH*((Number(s.rate_per_min)||0)/maxRate))); if(i===0) hctx.moveTo(cx,cy); else hctx.lineTo(cx,cy); }
+      hctx.stroke();
+      hctx.fillStyle='#334155'; hctx.font='12px system-ui,-apple-system,Segoe UI';
+      for(let i=0;i<N;i++){ const cx=padL+i*groupW+groupW/2; hctx.fillText(String(i+1), cx-3, h-10); }
+    }
+    async function loadHistory(){ try{ const r=await fetch('/api/safmeds-session?limit=20',{cache:'no-store'}); history = r.ok? await r.json():[]; }catch{ history=[]; } drawHistory(); }
+
+    inner.addEventListener('click', ()=> setFlip(!flipped));
+    startBtn.onclick=()=>start(); pauseBtn.onclick=()=>stop(); endBtn.onclick=()=>{ stop(); endAndSave(); };
+    correctBtn.onclick=()=>mark('correct'); missBtn.onclick=()=>mark('miss'); skipBtn.onclick=()=>nextItem();
+    shuffleBtn.onclick=()=>{ shuffleDeck(); }; resetBtn.onclick=()=>resetSession(); durationSel.onchange=()=>resetSession();
+    window.addEventListener('keydown', e=>{ if(/input|select|textarea/i.test(e.target.tagName)) return; if(e.code==='Space'){ e.preventDefault(); running?stop():start(); } else if(e.key.toLowerCase()==='j'){ mark('correct'); } else if(e.key.toLowerCase()==='k'){ mark('miss'); } else if(e.code==='ArrowRight'){ nextItem(); } else if(e.key.toLowerCase()==='e'){ stop(); endAndSave(); }});
+    async function loadDeck(){ try{ const r=await fetch('/api/flashcards',{cache:'no-store'}); const data=await r.json(); deck = Array.isArray(data)? data.map(x=>({ ...x, term:x.term||x.question||'', def:x.def||x.answer||'' })).filter(x=>x.term.trim()):[]; }catch{ deck=[]; } resetSession(); shuffleDeck(); }
+    (async function init(){ await loadDeck(); await loadHistory(); })();
+    window.addEventListener('resize', drawHistory);
+  </script>
+
+  <script src="/nav.js" defer></script>
+</body>
+</html>

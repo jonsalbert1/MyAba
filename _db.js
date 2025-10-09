@@ -1,6 +1,6 @@
-// api/_db.js
 const { Pool } = require('pg');
 
+// Reuse one pool across invocations
 const globalForPool = globalThis;
 if (!globalForPool.pgPool) {
   globalForPool.pgPool = new Pool({

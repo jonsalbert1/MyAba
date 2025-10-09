@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Quiz</title>
+  <link rel="stylesheet" href="/nav.css" />
+  <style>
+    :root{ --bg:#f7f8fb; --card:#fff; --ink:#0f172a; --muted:#64748b; --border:#e5e7eb; --soft:#f1f5f9; --shadow:0 10px 30px rgba(15,23,42,.08); --radius:16px; }
+    *{box-sizing:border-box} html,body{height:100%}
+    body{margin:0; background:var(--bg); color:var(--ink); font-family:Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;}
+    .container{width:min(1100px,92vw); margin:24px auto 40px}
+    .panel{background:var(--card); border:1px solid var(--border); border-radius:22px; box-shadow:var(--shadow); padding:18px}
+    .row{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:12px}
+    .progress{font-weight:700}
+    .q{font-size:18px; font-weight:800; margin:2px 0 10px}
+    .options{display:grid; gap:10px}
+    .opt{background:#fff; border:1px solid var(--border); border-radius:12px; padding:10px 12px; cursor:pointer; font-weight:600}
+    .opt:hover{background:var(--soft)}
+    .opt.correct{border-color:#22c55e; background:#ecfdf5}
+    .opt.wrong{border-color:#ef4444; background:#fef2f2}
+    .explain{margin-top:10px; color:#334155; background:#f8fafc; border:1px solid var(--border); border-radius:12px; padding:10px 12px; display:none}
+    .controls{display:flex; gap:10px; margin-top:12px}
+    .btn{background:#fff; border:1px solid var(--border); border-radius:10px; padding:8px 12px; font-weight:600; cursor:pointer}
+  </style>
+</head>
+<body>
+  <!-- Dark blue nav -->
+  <header class="site-nav">
+    <div class="site-nav__inner">
+      <a class="site-nav__brand" href="/"><span class="site-nav__logo">ABA</span><span class="site-nav__name">Study Tools</span></a>
+      <nav class="site-nav__links" id="navLinks">
+        <a href="/flashcards.html">Flashcards</a>
+        <a href="/quiz.html">Quiz</a>
+        <a href="/safmeds.html">SAFMEDS</a>
+      </nav>
+      <button class="site-nav__menu" id="navToggle" aria-label="Menu">Menu</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="panel">
+      <div class="row">
+        <div class="progress" id="progress">0 / 0</div>
+        <div id="score">Score: 0</div>
+      </div>
+      <div class="q" id="question">Loading…</div>
+      <div class="options" id="options"></div>
+      <div class="explain" id="explain"></div>
+      <div class="controls">
+        <button class="btn" id="prev">Prev ←</button>
+        <button class="btn" id="next">Next →</button>
+        <button class="btn" id="shuffle">Shuffle</button>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const qEl = document.getElementById('question');
+    const optsEl = document.getElementById('options');
+    const expEl = document.getElementById('explain');
+    const progressEl = document.getElementById('progress');
+    const scoreEl = document.getElementById('score');
+    const prevBtn = document.getElementById('prev');
+    const nextBtn = document.getElementById('next');
+    const shuffleBtn = document.getElementById('shuffle');
+
+    let items = [], i = 0, score = 0, answered = new Map();
+
+    const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+    function render(){
+      if (!items.length){ qEl.textContent='No questions found.'; optsEl.innerHTML=''; progressEl.textContent='0 / 0'; return; }
+      const it = items[i];
+      qEl.textContent = esc(it.question || '');
+      progressEl.textContent = `${i+1} / ${items.length}`;
+      expEl.style.display = 'none';
+      expEl.textContent = it.rationale ? `Why: ${it.rationale}` : '';
+
+      optsEl.innerHTML = '';
+      (it.options || []).forEach((text, idx)=>{
+        const btn = document.createElement('button');
+        btn.className = 'opt';
+        btn.textContent = esc(text);
+        btn.onclick = () => choose(idx);
+        optsEl.appendChild(btn);
+      });
+
+      // if already answered, show it
+      if (answered.has(it.id)){
+        const chosen = answered.get(it.id);
+        [...optsEl.children].forEach((b, idx)=>{
+          b.classList.toggle('correct', idx === it.correctIndex);
+          b.classList.toggle('wrong', idx === chosen && chosen !== it.correctIndex);
+          b.disabled = true;
+        });
+        if (it.rationale) expEl.style.display = 'block';
+      }
+    }
+
+    function choose(idx){
+      const it = items[i];
+      if (answered.has(it.id)) return;
+      answered.set(it.id, idx);
+      if (idx === it.correctIndex) score++;
+      scoreEl.textContent = `Score: ${score}`;
+      // show feedback
+      [...optsEl.children].forEach((b, j)=>{
+        b.classList.toggle('correct', j === it.correctIndex);
+        b.classList.toggle('wrong', j === idx && idx !== it.correctIndex);
+        b.disabled = true;
+      });
+      if (it.rationale) expEl.style.display = 'block';
+    }
+
+    function next(){ if (!items.length) return; i = (i+1)%items.length; render(); }
+    function prev(){ if (!items.length) return; i = (i-1+items.length)%items.length; render(); }
+    function shuffle(){
+      for (let j=items.length-1;j>0;j--){ const k=Math.floor(Math.random()*(j+1)); [items[j],items[k]]=[items[k],items[j]]; }
+      i=0; render();
+    }
+
+    prevBtn.onclick = prev; nextBtn.onclick = next; shuffleBtn.onclick = shuffle;
+    window.addEventListener('keydown', e=>{
+      if (/input|select|textarea/i.test(e.target.tagName)) return;
+      if (e.code==='ArrowRight') next();
+      if (e.code==='ArrowLeft')  prev();
+    });
+
+    (async function init(){
+      try{
+        const r = await fetch('/api/quiz',{cache:'no-store'});
+        items = await r.json();
+        if (!Array.isArray(items)) items=[];
+      }catch{ items=[]; }
+      score = 0; answered.clear?.();
+      render();
+    })();
+  </script>
+
+  <script src="/nav.js" defer></script>
+</body>
+</html>

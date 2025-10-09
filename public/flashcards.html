@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Flashcards</title>
+  <!-- shared dark-blue nav -->
+  <link rel="stylesheet" href="/nav.css" />
+  <style>
+    :root{
+      --bg:#f7f8fb; --card:#ffffff; --ink:#0f172a; --muted:#64748b; --border:#e5e7eb; --soft:#f1f5f9;
+      --btn-bg:#ffffff; --btn-bd:#e5e7eb; --btn-shadow:0 1px 0 rgba(0,0,0,.05), 0 6px 22px rgba(2,6,23,.06);
+      --shadow:0 10px 30px rgba(15,23,42,.08); --radius:14px;
+      --ok:#d1fae5; --bad:#fee2e2;
+    }
+    *{box-sizing:border-box} html,body{height:100%}
+    body{
+      margin:0; background:var(--bg); color:var(--ink);
+      font-family:Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+    }
+
+    .container{ width:min(1100px,92vw); margin:22px auto 40px; }
+
+    /* page header row */
+    .row{display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:8px}
+    .title{ font-weight:800; letter-spacing:.2px; }
+    .progress{ font-weight:700; color:#0b1730 }
+
+    /* controls row */
+    .controls{ display:flex; gap:10px; flex-wrap:wrap; margin:12px 0 10px; }
+    .btn{
+      background:var(--btn-bg); border:1px solid var(--btn-bd); border-radius:12px;
+      padding:8px 12px; font-weight:600; color:#0b1730; box-shadow:var(--btn-shadow); cursor:pointer;
+    }
+    .btn:active{ transform: translateY(1px) }
+
+    /* card */
+    .cardWrap{
+      background:var(--card); border:1px solid var(--border); border-radius:22px; box-shadow:var(--shadow);
+      width:100%; height:260px; display:flex; align-items:center; justify-content:center; margin:12px 0 6px;
+    }
+    .card{ perspective:1000px; width:100%; height:100%; display:flex; align-items:center; justify-content:center; }
+    .inner{
+      position:relative; width:86%; height:70%;
+      transform-style:preserve-3d; transition: transform .5s cubic-bezier(.2,.8,.2,1);
+      cursor:pointer; outline:none;
+    }
+    .inner.flipped{ transform: rotateY(180deg); }
+    .face{
+      position:absolute; inset:0; backface-visibility:hidden;
+      background:var(--soft); border:1px solid var(--border);
+      border-radius: var(--radius);
+      display:flex; align-items:center; justify-content:center;
+      padding:18px; color:var(--muted);
+    }
+    .front .term{ font-weight:800; font-size:22px; letter-spacing:.3px; color:#1f2937; text-align:center; }
+    .domain{ position:absolute; top:10px; left:12px; font-size:12px; color:#475569 }
+    .back{ transform: rotateY(180deg); }
+    .back .def{ font-size:18px; line-height:1.45; color:#1f2937; text-align:center; padding:0 10px }
+
+    .tip{ text-align:center; color:var(--muted); font-size:13px; margin:8px 0 20px; }
+
+    /* lower grid */
+    .grid{ display:grid; grid-template-columns: 1fr 1fr; gap:18px; }
+    @media (max-width: 840px){ .grid{ grid-template-columns: 1fr; } }
+
+    .panel{
+      background:var(--card); border:1px solid var(--border); border-radius:22px; box-shadow:var(--shadow); padding:16px 18px;
+    }
+    .panel h3{ margin:0 0 12px; font-size:16px }
+
+    .voteBtns{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .pill{
+      border-radius:12px; padding:12px 16px; font-weight:700; border:1px solid var(--border);
+      background:#fff; box-shadow:var(--btn-shadow); cursor:pointer;
+    }
+    .pill.ok{ background:var(--ok) } .pill.bad{ background:var(--bad) }
+
+    .tot{ font-size:12px; color:var(--muted); margin-left:auto }
+    .chartBox{
+      height:200px; display:flex; align-items:center; justify-content:center;
+      border:1px dashed var(--border); border-radius:12px; background:var(--soft);
+    }
+    canvas{ width:100%; height:100%; }
+  </style>
+</head>
+<body>
+  <!-- Dark-blue nav -->
+  <header class="site-nav">
+    <div class="site-nav__inner">
+      <a class="site-nav__brand" href="/"><span class="site-nav__logo">ABA</span><span class="site-nav__name">Study Tools</span></a>
+      <nav class="site-nav__links" id="navLinks">
+        <a href="/flashcards.html">Flashcards</a>
+        <a href="/quiz.html">Quiz</a>
+        <a href="/safmeds.html">SAFMEDS</a>
+      </nav>
+      <button class="site-nav__menu" id="navToggle" aria-label="Menu">Menu</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="row">
+      <div class="title">Flashcards</div>
+      <div class="progress" id="progress">0 / 0</div>
+    </div>
+
+    <div class="controls">
+      <button class="btn" id="prevBtn">Prev ←</button>
+      <button class="btn" id="flipBtn">Flip (Space)</button>
+      <button class="btn" id="nextBtn">Next →</button>
+      <button class="btn" id="shuffleBtn">Shuffle</button>
+    </div>
+
+    <div class="cardWrap">
+      <div class="card">
+        <div id="cardInner" class="inner" tabindex="0" aria-live="polite">
+          <div class="face front">
+            <div class="domain" id="domainEl"></div>
+            <div class="term" id="termEl">TERM</div>
+          </div>
+          <div class="face back">
+            <div class="def" id="defEl">DEFINITION</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tip">Tip: click the card to flip</div>
+
+    <div class="grid">
+      <section class="panel">
+        <div class="voteBtns">
+          <button class="pill ok"  id="knewBtn">I knew it</button>
+          <button class="pill bad" id="missedBtn">I missed it</button>
+          <button class="btn" id="resetBtn">Reset</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="row" style="margin-bottom:10px;">
+          <h3 style="margin:0">Session Results</h3>
+          <div class="tot"><span id="totalLabel">Total: 0</span></div>
+        </div>
+        <div class="chartBox">
+          <canvas id="resultsChart"></canvas>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    // DOM
+    const termEl = document.getElementById('termEl');
+    const defEl = document.getElementById('defEl');
+    const domainEl = document.getElementById('domainEl');
+    const inner = document.getElementById('cardInner');
+    const progressEl = document.getElementById('progress');
+    const totalLabel = document.getElementById('totalLabel');
+
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const flipBtn = document.getElementById('flipBtn');
+    const shuffleBtn = document.getElementById('shuffleBtn');
+    const knewBtn = document.getElementById('knewBtn');
+    const missedBtn = document.getElementById('missedBtn');
+    const resetBtn = document.getElementById('resetBtn');
+
+    // State
+    let deck = [];
+    let i = 0;
+    let flipped = false;
+    let known = 0, missed = 0;
+
+    const escapeHtml = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+    function updateCard(){
+      if (!deck.length) {
+        termEl.textContent = 'No cards';
+        defEl.textContent = 'Add rows to the "flashcards" table.';
+        domainEl.textContent = '';
+        progressEl.textContent = '0 / 0';
+        return;
+      }
+      const row = deck[i];
+      termEl.textContent = escapeHtml(row.term || '');
+      defEl.textContent = escapeHtml(row.def || '');
+      domainEl.textContent = row.domain ? escapeHtml(row.domain) : '';
+      progressEl.textContent = (i + 1) + ' / ' + deck.length;
+      inner.classList.toggle('flipped', flipped);
+    }
+
+    function flip(){ flipped = !flipped; inner.classList.toggle('flipped', flipped); }
+    function next(){ if (!deck.length) return; i = (i + 1) % deck.length; flipped = false; updateCard(); }
+    function prev(){ if (!deck.length) return; i = (i - 1 + deck.length) % deck.length; flipped = false; updateCard(); }
+    function shuffle(){
+      if (!deck.length) return;
+      for (let j = deck.length - 1; j > 0; j--) {
+        const k = Math.floor(Math.random() * (j + 1));
+        [deck[j], deck[k]] = [deck[k], deck[j]];
+      }
+      i = 0; flipped = false; updateCard();
+    }
+
+    // Tiny bar chart
+    const canvas = document.getElementById('resultsChart');
+    const ctx = canvas.getContext('2d');
+    function drawChart(){
+      const DPR = window.devicePixelRatio || 1;
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      canvas.width = w * DPR; canvas.height = h * DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+
+      ctx.clearRect(0,0,w,h);
+      const pad = {l:40, r:20, t:20, b:30};
+      const plotW = w - pad.l - pad.r, plotH = h - pad.t - pad.b;
+
+      ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1;
+      ctx.strokeRect(pad.l, pad.t, plotW, plotH);
+
+      const total = Math.max(1, known + missed);
+      const groupW = plotW / 2;
+      const maxH = plotH;
+
+      // known (green)
+      const kH = maxH * (known / total);
+      ctx.fillStyle = '#22c55e';
+      ctx.fillRect(pad.l + groupW*0 + 14, pad.t + (plotH - kH), groupW - 28, kH);
+
+      // missed (red)
+      const mH = maxH * (missed / total);
+      ctx.fillStyle = '#ef4444';
+      ctx.fillRect(pad.l + groupW*1 + 14, pad.t + (plotH - mH), groupW - 28, mH);
+
+      // labels
+      ctx.fillStyle = '#334155';
+      ctx.font = '12px system-ui, -apple-system, Segoe UI';
+      ctx.fillText('Knew it', pad.l + 14, h - 10);
+      ctx.fillText('Missed', pad.l + groupW + 14, h - 10);
+
+      totalLabel.textContent = 'Total: ' + (known + missed);
+    }
+
+    knewBtn.onclick   = () => { known++; drawChart(); next(); };
+    missedBtn.onclick = () => { missed++; drawChart(); next(); };
+    resetBtn.onclick  = () => { known = 0; missed = 0; drawChart(); };
+
+    prevBtn.onclick = prev;
+    nextBtn.onclick = next;
+    flipBtn.onclick = flip;
+    shuffleBtn.onclick = shuffle;
+
+    inner.addEventListener('click', flip);
+    inner.addEventListener('keydown', e => {
+      if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); flip(); }
+      if (e.code === 'ArrowRight') next();
+      if (e.code === 'ArrowLeft')  prev();
+    });
+
+    (async function init(){
+      try{
+        const res = await fetch('/api/flashcards', { cache: 'no-store' });
+        const data = await res.json();
+        deck = Array.isArray(data)
+          ? data.map(x => ({ ...x, term: x.term || x.question || '', def: x.def || x.answer || '' }))
+               .filter(x => x.term.trim())
+          : [];
+      }catch(e){ deck = []; }
+      known = 0; missed = 0; i = 0; flipped = false;
+      updateCard(); drawChart();
+    })();
+
+    window.addEventListener('resize', drawChart);
+  </script>
+
+  <script src="/nav.js" defer></script>
+</body>
+</html>

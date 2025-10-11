@@ -2,29 +2,25 @@
 import { useState } from "react";
 import Head from "next/head";
 
+type Row = { term: string; def: string };
+
 export default function AdminPage() {
   const [csv, setCsv] = useState<string>("term,def\nSD,Discriminative Stimulus\nMO,Motivating Operation");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
-  // Simple CSV -> array of {term, def}
-  const parseCsv = (text: string) => {
-    const rows = text
-      .trim()
-      .split(/\r?\n/)
-      .map((line) => line.split(",").map((c) => c.trim()));
-
-    if (rows.length < 2) return [];
-
-    const header = rows[0].map((h) => h.toLowerCase());
+  const parseCsv = (text: string): Row[] => {
+    const lines = text.trim().split(/\r?\n/);
+    if (lines.length < 2) return [];
+    const header = lines[0].split(",").map(h => h.trim().toLowerCase());
     const ti = header.indexOf("term");
     const di = header.indexOf("def");
     if (ti < 0 || di < 0) throw new Error('Header must include "term,def"');
 
-    return rows
-      .slice(1)
-      .map((r) => ({ term: r[ti], def: r[di] }))
-      .filter((r) => r.term && r.def);
+    return lines.slice(1).map(line => {
+      const cols = line.split(",").map(c => c.trim());
+      return { term: cols[ti] ?? "", def: cols[di] ?? "" };
+    }).filter(r => r.term && r.def);
   };
 
   const upload = async () => {
@@ -33,7 +29,6 @@ export default function AdminPage() {
     try {
       const payload = parseCsv(csv);
       if (!payload.length) throw new Error("No rows to insert");
-
       const res = await fetch("/api/aba/flashcards", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -41,7 +36,6 @@ export default function AdminPage() {
       });
       const j = await res.json();
       if (!j.ok) throw new Error(j.error || "Insert failed");
-
       setMessage(`Inserted ${payload.length} rows ✅`);
     } catch (e: any) {
       setMessage(`Error: ${e?.message || "Unknown error"}`);
@@ -71,13 +65,20 @@ export default function AdminPage() {
       <main style={{ minHeight: "100vh", padding: 24, background: "#f7f7fb" }}>
         <h1 style={{ fontSize: 28, fontWeight: 700, color: "#0f3d87", marginBottom: 12 }}>Admin – Flashcards Uploader</h1>
         <p style={{ color: "#6b7280", marginBottom: 8 }}>
-          Paste CSV with headers <b>term,def</b>. Rows will be inserted into the deck set by <code>GLOBAL_DECK_ID</code>.
+          Paste CSV with headers <b>term,def</b>. Rows go into the deck set by <code>GLOBAL_DECK_ID</code>.
         </p>
 
         <textarea
           value={csv}
           onChange={(e) => setCsv(e.target.value)}
-          style={{ width: "100%", height: 240, padding: 12, borderRadius: 12, border: "1px solid #e5e7eb", background: "#fff" }}
+          style={{
+            width: "100%",
+            height: 240,
+            padding: 12,
+            borderRadius: 12,
+            border: "1px solid #e5e7eb",
+            background: "#fff"
+          }}
         />
 
         <div style={{ display: "flex", gap: 12, marginTop: 12 }}>

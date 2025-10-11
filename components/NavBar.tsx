@@ -1,27 +1,17 @@
-// components/NavBar.tsx
 import Link from "next/link";
 
 export default function NavBar() {
   return (
-    <header style={{ background: "#0f3d87", color: "#fff" }}>
-      <nav
-        style={{
-          maxWidth: 1200,
-          margin: "0 auto",
-          display: "flex",
-          alignItems: "center",
-          gap: 16,
-          padding: "14px 20px",
-        }}
-      >
-        <Link href="/" style={{ textDecoration: "none", color: "inherit" }}>
-          <span style={{ fontWeight: 800, fontSize: 22, letterSpacing: 0.5 }}>MyABA</span>
+    <header className="bg-blue-900 text-white">
+      <nav className="max-w-6xl mx-auto flex items-center gap-6 px-4 py-3">
+        <Link href="/" className="font-extrabold text-2xl tracking-wide">
+          MyABA
         </Link>
-        <div style={{ display: "flex", gap: 14, marginLeft: 12 }}>
-          <Link href="/flashcards" style={{ color: "white" }}>Flashcards</Link>
-          <Link href="/quiz" style={{ color: "white" }}>Quiz</Link>
-          <Link href="/safmeds" style={{ color: "white" }}>SAFMEDS</Link>
-          <Link href="/admin" style={{ color: "white" }}>Admin</Link>
+        <div className="flex gap-4">
+          <Link href="/flashcards" className="hover:text-gray-300">Flashcards</Link>
+          <Link href="/quiz" className="hover:text-gray-300">Quiz</Link>
+          <Link href="/safmeds" className="hover:text-gray-300">SAFMEDS</Link>
+          <Link href="/admin" className="hover:text-gray-300">Admin</Link>
         </div>
       </nav>
     </header>

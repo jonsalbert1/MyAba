@@ -3,21 +3,27 @@ import Link from "next/link";
 
 export default function NavBar() {
   return (
-    <header className="sticky top-0 z-10 border-b bg-white/90 backdrop-blur">
-      <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
-        {/* Brand */}
-        <Link href="/" className="text-xl font-bold tracking-tight text-blue-700">
-          myABA Study Suite
+    <header style={{ background: "#0f3d87", color: "#fff" }}>
+      <nav
+        style={{
+          maxWidth: 1200,
+          margin: "0 auto",
+          display: "flex",
+          alignItems: "center",
+          gap: 16,
+          padding: "14px 20px",
+        }}
+      >
+        <Link href="/" style={{ textDecoration: "none", color: "inherit" }}>
+          <span style={{ fontWeight: 800, fontSize: 22, letterSpacing: 0.5 }}>MyABA</span>
         </Link>
-
-        {/* Simple nav (optional, tweak as you like) */}
-        <nav className="flex items-center gap-4 text-sm text-gray-700">
-          <Link href="/flashcards" className="hover:text-blue-700">Flashcards</Link>
-          <Link href="/safmeds" className="hover:text-blue-700">SAFMEDS</Link>
-          <Link href="/quiz" className="hover:text-blue-700">Quiz</Link>
-          <Link href="/dashboard" className="hover:text-blue-700">Dashboard</Link>
-        </nav>
-      </div>
+        <div style={{ display: "flex", gap: 14, marginLeft: 12 }}>
+          <Link href="/flashcards" style={{ color: "white" }}>Flashcards</Link>
+          <Link href="/quiz" style={{ color: "white" }}>Quiz</Link>
+          <Link href="/safmeds" style={{ color: "white" }}>SAFMEDS</Link>
+          <Link href="/admin" style={{ color: "white" }}>Admin</Link>
+        </div>
+      </nav>
     </header>
   );
 }

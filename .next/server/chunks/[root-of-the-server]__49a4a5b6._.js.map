@@ -1,6 +1,0 @@
-{
-  "version": 3,
-  "sources": [],
-  "sections": [
-    {"offset": {"line": 16, "column": 0}, "map": {"version":3,"sources":["file:///C:/Users/jonsa/JSA/myaba/pages/api/debug/env-check.ts"],"sourcesContent":["import type { NextApiRequest, NextApiResponse } from \"next\";\r\n\r\nexport default function handler(_req: NextApiRequest, res: NextApiResponse) {\r\n  const url = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || \"\").trim();\r\n  const hasUrl = url.length > 0;\r\n  const hasService = !!(process.env.SUPABASE_SERVICE_ROLE_KEY || \"\").trim();\r\n\r\n  res.status(200).json({\r\n    has_SUPABASE_URL: hasUrl,\r\n    has_SERVICE_ROLE_KEY: hasService,\r\n    url_prefix: url.slice(0, 12),\r\n  });\r\n}\r\n"],"names":[],"mappings":";;;;AAEe,SAAS,QAAQ,IAAoB,EAAE,GAAoB;IACxE,MAAM,MAAM,CAAC,QAAQ,GAAG,CAAC,YAAY,oFAA4C,EAAE,EAAE,IAAI;IACzF,MAAM,SAAS,IAAI,MAAM,GAAG;IAC5B,MAAM,aAAa,CAAC,CAAC,CAAC,QAAQ,GAAG,CAAC,yBAAyB,IAAI,EAAE,EAAE,IAAI;IAEvE,IAAI,MAAM,CAAC,KAAK,IAAI,CAAC;QACnB,kBAAkB;QAClB,sBAAsB;QACtB,YAAY,IAAI,KAAK,CAAC,GAAG;IAC3B;AACF","debugId":null}}]
-}

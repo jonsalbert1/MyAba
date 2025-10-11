@@ -1,0 +1,3 @@
+{
+  "/api/quiz/list": "pages/api/quiz/list.js"
+}

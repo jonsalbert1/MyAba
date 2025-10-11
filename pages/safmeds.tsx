@@ -1,350 +1,433 @@
-// SAFMEDS page with Supabase logging
-// Place this file in /pages, not /pages/api
-// Files in /pages/api are reserved for backend API routes, so this should be saved as /pages/safmeds.tsx
-// This version uses Supabase logging, localStorage persistence, and performance graphs.
+// pages/safmeds.tsx
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  FlashCard,
+  loadFlashcards,
+  saveFlashcards,
+  loadSafMedsTrials,
+  saveSafMedsTrials,
+  SafMedsTrial,
+} from "../lib/storage";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from "recharts";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
-
-type Card = { term: string; def: string };
-type SessionResult = {
-  id: string;
-  timestamp: number;
-  durationSec: number;
-  correct: number;
-  errors: number;
-  cpm: number;
-  accuracy: number;
-};
-
-type UploadStatus = "idle" | "ok" | "error";
-
-const STORAGE_DECK = "safmeds:deck";
-const STORAGE_SESSIONS = "safmeds:sessions";
-const STORAGE_DEVICE_ID = "safmeds:device_id";
-
-function makeSupabase(): SupabaseClient | null {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key) return null;
-  try {
-    return createClient(url, key, { auth: { persistSession: false } });
-  } catch {
-    return null;
-  }
-}
-
-function readJSON<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJSON<T>(key: string, value: T) {
-  localStorage.setItem(key, JSON.stringify(value));
-}
-
-function ensureDeviceId(): string {
-  let id = localStorage.getItem(STORAGE_DEVICE_ID);
-  if (!id) {
-    id = (typeof crypto !== "undefined" && (crypto as any).randomUUID?.()) || Math.random().toString(36).slice(2);
-    localStorage.setItem(STORAGE_DEVICE_ID, id);
-  }
-  return id;
-}
-
-function shuffle<T>(arr: T[]): T[] {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-export default function SAFMEDSPage() {
-  const [deck, setDeck] = useState<Card[]>([]);
-  const [sessions, setSessions] = useState<SessionResult[]>([]);
-  const [isRunning, setIsRunning] = useState(false);
-  const [showDef, setShowDef] = useState(false);
-  const [secondsLeft, setSecondsLeft] = useState(60);
-  const [durationSec, setDurationSec] = useState(60);
-  const [order, setOrder] = useState<number[]>([]);
-  const [index, setIndex] = useState(0);
+export default function SafMedsPage() {
+  const [deck, setDeck] = useState<FlashCard[]>([]);
+  const [secs, setSecs] = useState(60);
+  const [running, setRunning] = useState(false);
   const [correct, setCorrect] = useState(0);
   const [errors, setErrors] = useState(0);
-  const [sb, setSb] = useState<SupabaseClient | null>(null);
-  const [cloudStatus, setCloudStatus] = useState<UploadStatus>("idle");
-  const lastFailedRef = useRef<SessionResult | null>(null);
-  const timerRef = useRef<number | null>(null);
+  const [current, setCurrent] = useState(0);
+  const [trials, setTrials] = useState<SafMedsTrial[]>([]);
+  const [flipped, setFlipped] = useState(false);
 
+  // keep latest counts for saving at stop/auto-stop
+  const correctRef = useRef(0);
+  const errorsRef = useRef(0);
+  const stoppingRef = useRef(false);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Hydrate from DB first; fall back to localStorage
   useEffect(() => {
-    setDeck(readJSON<Card[]>(STORAGE_DECK, []));
-    setSessions(readJSON<SessionResult[]>(STORAGE_SESSIONS, []));
-    setSb(makeSupabase());
-    ensureDeviceId();
+    let cancelled = false;
+
+    async function loadAll() {
+      // flashcards from DB
+      try {
+        const fc = await fetch("/api/flashcards/list?deckId=default").then((r) => r.json());
+        if (!cancelled && Array.isArray(fc.records) && fc.records.length) {
+          setDeck(fc.records);
+        } else if (!cancelled) {
+          setDeck(loadFlashcards());
+        }
+      } catch {
+        if (!cancelled) setDeck(loadFlashcards());
+      }
+
+      // trials from DB
+      try {
+        const tr = await fetch("/api/safmeds/listTrials?deckId=default").then((r) => r.json());
+        if (!cancelled && Array.isArray(tr.records)) {
+          const mapped: SafMedsTrial[] = tr.records.map((r: any) => ({
+            timestamp: Number(r.timestamp_ms),
+            correct: Number(r.correct),
+            errors: Number(r.errors),
+            secs: Number(r.secs),
+          }));
+          setTrials(mapped);
+        } else if (!cancelled) {
+          setTrials(loadSafMedsTrials());
+        }
+      } catch {
+        if (!cancelled) setTrials(loadSafMedsTrials());
+      }
+    }
+
+    loadAll();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
+  // mirror counts into refs
   useEffect(() => {
-    writeJSON(STORAGE_SESSIONS, sessions);
-  }, [sessions]);
+    correctRef.current = correct;
+  }, [correct]);
+  useEffect(() => {
+    errorsRef.current = errors;
+  }, [errors]);
 
-  const hasDeck = deck.length > 0;
-  const currentCard = hasDeck && order.length > 0 ? deck[order[index % order.length]] : null;
-
-  const startRun = useCallback(() => {
-    if (!hasDeck) return;
-    setOrder(shuffle(deck.map((_, i) => i)));
-    setCorrect(0);
-    setErrors(0);
-    setShowDef(false);
-    setIndex(0);
-    setIsRunning(true);
-    setSecondsLeft(durationSec);
-
-    const start = Date.now();
-    timerRef.current && clearInterval(timerRef.current);
-    timerRef.current = window.setInterval(() => {
-      setSecondsLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timerRef.current!);
-          timerRef.current = null;
-          setIsRunning(false);
-          const elapsed = Math.max(1, Math.round((Date.now() - start) / 1000));
-          const cpm = correct / (elapsed / 60);
-          const acc = correct + errors === 0 ? 0 : correct / (correct + errors);
-          const newResult: SessionResult = {
-            id: (crypto as any)?.randomUUID?.() || Math.random().toString(36).slice(2),
-            timestamp: Date.now(),
-            durationSec: elapsed,
-            correct,
-            errors,
-            cpm: Number(cpm.toFixed(2)),
-            accuracy: Number(acc.toFixed(4)),
-          };
-          setSessions((prev) => [...prev, newResult]);
-          void uploadToSupabase(newResult);
+  // timer
+  useEffect(() => {
+    if (!running) return;
+    timerRef.current = setInterval(() => {
+      setSecs((s) => {
+        if (s <= 1) {
+          stopTrial(true); // auto-stop at 0
           return 0;
         }
-        return prev - 1;
+        return s - 1;
       });
-    }, 1000) as unknown as number;
-  }, [deck, durationSec, hasDeck, correct, errors]);
-
-  const stopRun = useCallback(() => {
-    timerRef.current && clearInterval(timerRef.current);
-    setIsRunning(false);
-  }, []);
-
-  const mark = (ok: boolean) => {
-    if (!isRunning) return;
-    ok ? setCorrect((c) => c + 1) : setErrors((e) => e + 1);
-    setShowDef(false);
-    setIndex((i) => (i + 1) % deck.length);
-  };
-
-  const uploadDeck = (file: File) => {
-    const r = new FileReader();
-    r.onload = (e) => {
-      const text = String(e.target?.result ?? "");
-      const [headerLine, ...lines] = text.split(/\r?\n/).filter(Boolean);
-      const headers = headerLine.split(",").map((x) => x.trim().toLowerCase());
-      const t = headers.indexOf("term"), d = headers.indexOf("def");
-      if (t < 0 || d < 0) return alert("CSV must have headers term,def");
-      const parsed = lines.map((l) => l.split(",")).map((a) => ({ term: a[t], def: a[d] })).filter((x) => x.term && x.def);
-      setDeck(parsed);
-      writeJSON(STORAGE_DECK, parsed);
+    }, 1000);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
     };
-    r.readAsText(file);
-  };
+  }, [running]);
 
-  const graphData = useMemo(
-    () =>
-      sessions.map((s, i) => ({
-        session: i + 1,
-        cpm: s.cpm,
-        correct: s.correct,
-        errors: s.errors,
-      })),
-    [sessions]
-  );
+  const card = deck[current];
 
-  async function uploadToSupabase(result: SessionResult) {
-    if (!sb) {
-      setCloudStatus("error");
-      lastFailedRef.current = result;
-      return;
-    }
-    try {
-      const deviceId = ensureDeviceId();
-      const { error } = await sb.from("safmeds_sessions").insert({
-        duration_sec: result.durationSec,
-        correct: result.correct,
-        errors: result.errors,
-        cpm: result.cpm,
-        accuracy: result.accuracy,
-        deck_size: deck.length,
-        device_id: deviceId,
-        local_timestamp_ms: result.timestamp,
-        app_version: typeof window !== "undefined" ? `web-${navigator.userAgent}` : "web",
-      });
-      if (error) throw error;
-      setCloudStatus("ok");
-      lastFailedRef.current = null;
-    } catch (e) {
-      console.warn("Supabase upload failed", e);
-      setCloudStatus("error");
-      lastFailedRef.current = result;
-    }
+  function startTrial() {
+    setCorrect(0);
+    setErrors(0);
+    correctRef.current = 0;
+    errorsRef.current = 0;
+    stoppingRef.current = false;
+
+    setSecs(60);
+    setFlipped(false);
+    setRunning(true);
   }
 
-  const retryLastUpload = async () => {
-    if (lastFailedRef.current) {
-      await uploadToSupabase(lastFailedRef.current);
+  function stopTrial(auto = false) {
+    if (stoppingRef.current) return;
+    stoppingRef.current = true;
+
+    setRunning(false);
+    if (timerRef.current) clearInterval(timerRef.current);
+
+    // Save to local history
+    const rec: SafMedsTrial = {
+      timestamp: Date.now(),
+      correct: correctRef.current,
+      errors: errorsRef.current,
+      secs: 60,
+    };
+    const next = [...trials, rec];
+    setTrials(next);
+    saveSafMedsTrials(next);
+
+    // Persist to DB (non-blocking)
+    fetch("/api/safmeds/addTrial", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        deckId: "default",
+        timestamp_ms: rec.timestamp,
+        correct: rec.correct,
+        errors: rec.errors,
+        secs: rec.secs,
+      }),
+    }).catch(() => {});
+
+    // If auto, keep UI calm; if manual stop, do nothing special
+  }
+
+  const accuracy = useMemo(() => {
+    const total = correct + errors;
+    return total === 0 ? 0 : Math.round((correct / total) * 100);
+  }, [correct, errors]);
+
+  function nextCard() {
+    if (!deck.length) return;
+    setCurrent((i) => (i + 1) % deck.length);
+    setFlipped(false); // always show Term first
+  }
+
+  // Buttons rely on live "running" (buttons disabled when not running)
+  function markCorrect() {
+    if (!running) return;
+    setCorrect((c) => {
+      const v = c + 1;
+      correctRef.current = v;
+      return v;
+    });
+    nextCard();
+  }
+
+  function markError() {
+    if (!running) return;
+    setErrors((e) => {
+      const v = e + 1;
+      errorsRef.current = v;
+      return v;
+    });
+    nextCard();
+  }
+
+  function onCSVUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const txt = String(reader.result || "");
+      const lines = txt.split(/\r?\n/).filter(Boolean);
+      const rows: FlashCard[] = [];
+      for (let i = 0; i < lines.length; i++) {
+        const parts = lines[i].split(",");
+        if (i === 0 && /term/i.test(parts[0])) continue;
+        if (parts.length >= 2) rows.push({ term: parts[0].trim(), def: parts.slice(1).join(",").trim() });
+      }
+      saveFlashcards(rows); // local
+      setDeck(rows);
+      setCurrent(0);
+      setFlipped(false);
+      // optional: also push to DB if you added the bulkUpsert route
+      fetch("/api/flashcards/bulkUpsert", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deckId: "default", records: rows }),
+      }).catch(() => {});
+    };
+    reader.readAsText(f);
+  }
+
+  // Shuffle deck (disabled while running)
+  function shuffleDeck() {
+    if (running || deck.length < 2) return;
+    const arr = deck.slice();
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
     }
-  };
+    setDeck(arr);
+    setCurrent(0);
+    setFlipped(false);
+  }
+
+  // Space flips card
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.code === "Space") {
+        e.preventDefault();
+        setFlipped((f) => !f);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
-    <main className="min-h-screen bg-gray-50">
-      <header className="sticky top-0 bg-white/80 border-b">
-        <div className="mx-auto max-w-5xl px-6 py-4 flex justify-between items-center">
-          <h1 className="text-2xl font-semibold">SAFMEDS</h1>
-          <div className="flex gap-3 items-center">
-            <CloudBadge status={cloudStatus} configured={!!sb} onRetry={retryLastUpload} />
-            <DurationPicker value={durationSec} onChange={setDurationSec} disabled={isRunning} />
-            <button
-              onClick={isRunning ? stopRun : startRun}
-              disabled={!hasDeck}
-              className={`px-4 py-2 rounded-xl text-white ${isRunning ? "bg-red-600" : "bg-blue-600"}`}
-            >
-              {isRunning ? "Stop" : "Start"}
+    <main style={{ maxWidth: 1000, margin: "0 auto", padding: 24 }}>
+      <h1 style={{ fontSize: 24, marginBottom: 10 }}>SAFMEDS</h1>
+      <p style={{ color: "#555" }}>
+        One-minute timing. Use the same <code>term,def</code> CSV as Flashcards. Click the card (or press Space) to flip.
+      </p>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <label style={importBtn}>
+          Import CSV
+          <input type="file" accept=".csv" onChange={onCSVUpload} style={{ display: "none" }} />
+        </label>
+
+        <button onClick={shuffleDeck} style={ghostBtn} disabled={running || deck.length < 2}>
+          Shuffle Deck
+        </button>
+      </div>
+
+      <section style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+        {/* LEFT: Timer + Card + Buttons */}
+        <div style={panel}>
+          <div style={{ fontSize: 48, fontWeight: 800, textAlign: "center" }}>{secs}s</div>
+
+          <div style={{ display: "flex", justifyContent: "center", gap: 10, marginTop: 12 }}>
+            {!running ? (
+              <button onClick={startTrial} style={primaryBtn}>Start</button>
+            ) : (
+              <button onClick={() => stopTrial(false)} style={dangerBtn}>Stop</button>
+            )}
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 16 }}>
+            <Stat label="Correct" value={correct} />
+            <Stat label="Errors" value={errors} />
+            <Stat label="Accuracy" value={`${accuracy}%`} />
+          </div>
+
+          {/* Flip Card */}
+          <div
+            onClick={() => setFlipped((f) => !f)}
+            style={{
+              marginTop: 16,
+              background: "white",
+              border: "1px solid #e5e7eb",
+              borderRadius: 14,
+              padding: 24,
+              minHeight: 140,
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "center",
+              gap: 8,
+              cursor: "pointer",
+              boxShadow: "0 8px 18px rgba(0,0,0,0.06)",
+              transition: "transform 0.15s",
+            }}
+            title="Click to flip"
+          >
+            {!card ? (
+              <div style={{ color: "#666" }}>Import a deck to begin</div>
+            ) : !flipped ? (
+              <>
+                <div style={{ fontWeight: 700, color: "#666" }}>Term</div>
+                <div style={{ fontSize: 22 }}>{card.term}</div>
+                <Hint />
+              </>
+            ) : (
+              <>
+                <div style={{ fontWeight: 700, color: "#666" }}>Definition</div>
+                <div style={{ color: "#333" }}>{card.def}</div>
+                <Hint flipped />
+              </>
+            )}
+          </div>
+
+          <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+            <button onClick={markCorrect} style={okBtn} disabled={!running}>
+              Mark Correct
+            </button>
+            <button onClick={markError} style={warnBtn} disabled={!running}>
+              Mark Error
             </button>
           </div>
         </div>
-      </header>
 
-      <section className="max-w-5xl mx-auto grid lg:grid-cols-3 gap-6 p-6">
-        <div className="lg:col-span-2 space-y-4">
-          {!hasDeck && (
-            <div className="p-6 bg-white rounded-xl border border-dashed">
-              <p className="text-gray-600 mb-2">Upload CSV (term,def) or load a sample deck.</p>
-              <input type="file" accept=".csv" onChange={(e) => e.target.files && uploadDeck(e.target.files[0])} />
-              <button
-                className="ml-3 border px-3 py-1 rounded-lg"
-                onClick={() => {
-                  const sample = [
-                    { term: "Positive Reinforcement", def: "Add stimulus; behavior increases" },
-                    { term: "Negative Reinforcement", def: "Remove stimulus; behavior increases" },
-                    { term: "Extinction", def: "Withhold reinforcement; behavior decreases" },
-                  ];
-                  setDeck(sample);
-                  writeJSON(STORAGE_DECK, sample);
-                }}
-              >
-                Load Sample
-              </button>
-            </div>
+        {/* RIGHT: History + Chart */}
+        <div style={panel}>
+          <h3 style={{ marginTop: 0 }}>Session History</h3>
+          {trials.length === 0 ? (
+            <div style={{ color: "#666" }}>No trials yet.</div>
+          ) : (
+            <>
+              <BarChart trials={trials} />
+              <ul style={{ marginTop: 12, paddingLeft: 18 }}>
+                {trials.slice(-8).reverse().map((t, i) => (
+                  <li key={t.timestamp + "_" + i}>
+                    {new Date(t.timestamp).toLocaleString()} — Correct: <b>{t.correct}</b>, Errors: <b>{t.errors}</b>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
-
-          <div className="grid grid-cols-3 gap-4">
-            <Stat label="Time" val={`${secondsLeft}s`} />
-            <Stat label="Correct" val={String(correct)} />
-            <Stat label="Errors" val={String(errors)} />
-          </div>
-
-          <motion.div key={`${index}-${showDef}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="bg-white border rounded-2xl p-6 text-center">
-            {currentCard ? (
-              <>
-                <p className="text-sm text-gray-500 mb-1">Card {index + 1}</p>
-                <h2 className="text-2xl font-semibold mb-4">{showDef ? currentCard.def : currentCard.term}</h2>
-                <div className="flex justify-center gap-3">
-                  <button className="border px-3 py-2 rounded-lg" onClick={() => setShowDef((v) => !v)}>
-                    {showDef ? "Show Term" : "Show Definition"}
-                  </button>
-                  <button className="bg-green-600 text-white px-3 py-2 rounded-lg" disabled={!isRunning} onClick={() => mark(true)}>
-                    ✓ Correct
-                  </button>
-                  <button className="bg-red-600 text-white px-3 py-2 rounded-lg" disabled={!isRunning} onClick={() => mark(false)}>
-                    ✗ Error
-                  </button>
-                </div>
-              </>
-            ) : (
-              <p className="text-gray-500">No cards loaded.</p>
-            )}
-          </motion.div>
-        </div>
-
-        <div className="space-y-4">
-          <div className="bg-white border rounded-xl p-4">
-            <h3 className="font-semibold mb-2">CPM Progress</h3>
-            <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={graphData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="session" />
-                <YAxis />
-                <Tooltip />
-                <Line type="monotone" dataKey="cpm" stroke="#2563eb" />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-
-          <div className="bg-white border rounded-xl p-4">
-            <h3 className="font-semibold mb-2">Correct vs Errors</h3>
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={graphData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="session" />
-                <YAxis />
-                <Tooltip />
-                <Legend />
-                <Bar dataKey="correct" fill="#16a34a" />
-                <Bar dataKey="errors" fill="#dc2626" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
         </div>
       </section>
-
-      <footer className="mx-auto max-w-5xl px-6 py-8 text-center text-xs text-gray-500">
-        Local persistence is always on. Cloud logging {sb ? "is configured." : "is NOT configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY."}
-      </footer>
     </main>
   );
 }
 
-const Stat = ({ label, val }: { label: string; val: string }) => (
-  <div className="bg-white border rounded-xl p-4 text-center">
-    <p className="text-xs text-gray-500">{label}</p>
-    <p className="text-xl font-semibold">{val}</p>
-  </div>
-);
-
-const DurationPicker = ({ value, onChange, disabled }: { value: number; onChange: (n: number) => void; disabled?: boolean }) => (
-  <select className="border rounded-lg px-2 py-1" value={value} onChange={(e) => onChange(parseInt(e.target.value))} disabled={disabled}>
-    {[30, 45, 60, 90, 120].map((s) => (
-      <option key={s} value={s}>
-        {s}s
-      </option>
-    ))}
-  </select>
-);
-
-function CloudBadge({ status, configured, onRetry }: { status: UploadStatus; configured: boolean; onRetry: () => void }) {
-  const label = !configured ? "Not configured" : status === "ok" ? "Uploaded" : status === "error" ? "Upload failed" : "Ready";
-  const color = !configured ? "bg-gray-200 text-gray-700" : status === "ok" ? "bg-green-100 text-green-700" : status === "error" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700";
+function Hint({ flipped = false }: { flipped?: boolean }) {
   return (
-    <div className={`flex items-center gap-2 text-xs px-2 py-1 rounded-lg ${color}`}>
-      <span>☁️</span>
-      <span>{label}</span>
-      {status === "error" && configured && (
-        <button className="underline" onClick={onRetry}>retry</button>
-      )}
+    <div style={{ marginTop: 8, fontSize: 12, color: "#888" }}>
+      {flipped ? "Click (or Space) to show Term" : "Click (or Space) to show Definition"}
     </div>
   );
 }
+
+function Stat({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div style={{ textAlign: "center" }}>
+      <div style={{ fontSize: 12, color: "#666" }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 700 }}>{value}</div>
+    </div>
+  );
+}
+
+function BarChart({ trials }: { trials: SafMedsTrial[] }) {
+  const last = trials.slice(-12);
+  const max = Math.max(1, ...last.map((t) => t.correct));
+  const w = 480, h = 160, pad = 24;
+  const barW = (w - pad * 2) / (last.length || 1);
+
+  return (
+    <svg width={w} height={h} style={{ background: "#fafafa", borderRadius: 8, border: "1px solid #eee" }}>
+      <line x1={pad} y1={h - pad} x2={w - pad} y2={h - pad} stroke="#ccc" />
+      <line x1={pad} y1={pad} x2={pad} y2={h - pad} stroke="#ccc" />
+      {last.map((t, i) => {
+        const x = pad + i * barW + 6;
+        const bh = ((t.correct / max) * (h - pad * 2)) | 0;
+        const y = h - pad - bh;
+        return <rect key={t.timestamp + "_" + i} x={x} y={y} width={barW - 12} height={bh} fill="#0b3d91" />;
+      })}
+      <text x={pad} y={pad - 6} fontSize="10" fill="#555">max {max}</text>
+    </svg>
+  );
+}
+
+const panel: React.CSSProperties = {
+  background: "white",
+  border: "1px solid #e5e7eb",
+  borderRadius: 14,
+  padding: 16,
+  boxShadow: "0 6px 14px rgba(0,0,0,0.06)",
+  minHeight: 260,
+};
+
+const importBtn: React.CSSProperties = {
+  display: "inline-block",
+  padding: "10px 14px",
+  background: "#0b3d91",
+  color: "white",
+  borderRadius: 8,
+  cursor: "pointer",
+};
+
+const ghostBtn: React.CSSProperties = {
+  padding: "10px 14px",
+  background: "white",
+  color: "#0b3d91",
+  border: "1px solid #0b3d91",
+  borderRadius: 8,
+  cursor: "pointer",
+};
+
+const primaryBtn: React.CSSProperties = {
+  padding: "10px 14px",
+  background: "#0b3d91",
+  color: "white",
+  border: "none",
+  borderRadius: 8,
+  cursor: "pointer",
+};
+
+const dangerBtn: React.CSSProperties = {
+  padding: "10px 14px",
+  background: "#d64545",
+  color: "white",
+  border: "none",
+  borderRadius: 8,
+  cursor: "pointer",
+};
+
+const okBtn: React.CSSProperties = {
+  padding: "8px 12px",
+  background: "#2bb673",
+  color: "white",
+  border: "none",
+  borderRadius: 8,
+  cursor: "pointer",
+};
+
+const warnBtn: React.CSSProperties = {
+  padding: "8px 12px",
+  background: "#ffae42",
+  color: "white",
+  border: "none",
+  borderRadius: 8,
+  cursor: "pointer",
+};

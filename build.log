@@ -1,0 +1,21 @@
+
+> myaba@1.0.0 build
+> next build
+
+   Γû▓ Next.js 15.5.4
+   - Environments: .env.local
+
+   Linting and checking validity of types ...
+Failed to compile.
+
+./pages/aba/flashcards.tsx:4:39
+Type error: Parameter 'req' implicitly has an 'any' type.
+
+  2 | import { createClient } from '@supabase/supabase-js';
+  3 |
+> 4 | export default async function handler(req, res) {
+    |                                       ^
+  5 |   const url = (process.env.SUPABASE_URL || '').trim();
+  6 |   const key = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  7 |   const deck = (process.env.GLOBAL_DECK_ID || '').trim();
+Next.js build worker exited with code: 1 and signal: null

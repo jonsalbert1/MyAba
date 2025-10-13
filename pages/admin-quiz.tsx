@@ -72,6 +72,7 @@ async function postChunks<T>(url: string, rows: T[], chunkSize = 300) {
 type Row = {
   domain: string;
   subdomain?: string | null;   // can be blank
+  question: string;            // <-- required
   a: string;
   b: string;
   c: string;
@@ -119,6 +120,7 @@ export default function AdminQuiz() {
     const idx = {
       domain: header.findIndex(h => h === "domain"),
       subdomain: header.findIndex(h => h === "subdomain"),
+      question: header.findIndex(h => h === "question" || h === "prompt"), // <-- accept both
       a: header.findIndex(h => h === "a"),
       b: header.findIndex(h => h === "b"),
       c: header.findIndex(h => h === "c"),
@@ -126,8 +128,11 @@ export default function AdminQuiz() {
       correct: header.findIndex(h => h === "correct"),
       rationale: header.findIndex(h => h === "rationale" || h === "explanation"),
     };
-    if (idx.domain < 0 || idx.a < 0 || idx.b < 0 || idx.c < 0 || idx.d < 0 || idx.correct < 0) {
-      throw new Error("CSV must include headers: domain,subdomain,a,b,c,d,correct,rationale");
+    if (
+      idx.domain < 0 || idx.question < 0 ||
+      idx.a < 0 || idx.b < 0 || idx.c < 0 || idx.d < 0 || idx.correct < 0
+    ) {
+      throw new Error("CSV must include headers: domain,subdomain,question,a,b,c,d,correct,rationale");
     }
 
     const out: Row[] = [];
@@ -135,6 +140,7 @@ export default function AdminQuiz() {
       const cols = splitCSVLine(lines[i]);
       const domain = (cols[idx.domain] ?? "").trim();
       const subdomain = idx.subdomain >= 0 ? (cols[idx.subdomain] ?? "").trim() : "";
+      const question = (cols[idx.question] ?? "").trim(); // <-- capture question
       const a = (cols[idx.a] ?? "").trim();
       const b = (cols[idx.b] ?? "").trim();
       const c = (cols[idx.c] ?? "").trim();
@@ -142,12 +148,13 @@ export default function AdminQuiz() {
       const correct = (cols[idx.correct] ?? "").trim().toUpperCase();
       const rationale = idx.rationale >= 0 ? (cols[idx.rationale] ?? "").trim() : "";
 
-      if (!domain || !a || !b || !c || !d) continue;
+      if (!domain || !question || !a || !b || !c || !d) continue;    // <-- require question
       if (!["A", "B", "C", "D"].includes(correct)) continue;
 
       out.push({
         domain,
         subdomain: subdomain || null,
+        question,
         a, b, c, d,
         correct,
         rationale: rationale || null,
@@ -163,7 +170,7 @@ export default function AdminQuiz() {
     setRows([]);
     try {
       if (f.size > 50 * 1024 * 1024) throw new Error("File too large (max 50 MB).");
-      const text = await readCSVFileSmart(f); // <-- use robust decoder
+      const text = await readCSVFileSmart(f); // <-- robust decoder
       const parsed = parseCSV(text);
       setRows(parsed);
       if (!parsed.length) setStatus("No valid rows found.");
@@ -216,7 +223,7 @@ export default function AdminQuiz() {
 
       <section style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 16, background: "#fff" }}>
         <p style={{ marginTop: 0 }}>
-          Upload a <b>.csv</b> with headers: <code>domain,subdomain,a,b,c,d,correct,rationale</code>.<br />
+          Upload a <b>.csv</b> with headers: <code>domain,subdomain,question,a,b,c,d,correct,rationale</code>.<br />
           • <b>correct</b> must be one of <code>A</code>, <code>B</code>, <code>C</code>, <code>D</code>.<br />
           • <b>subdomain</b> can be blank for now.
         </p>
@@ -261,7 +268,7 @@ export default function AdminQuiz() {
             >
               {busy ? "Uploading…" : "Upload to Supabase"}
             </button>
-            <a href="/flashcards" style={{ textDecoration: "underline", fontSize: 14 }}>View Flashcards →</a>
+            <a href="/quiz" style={{ textDecoration: "underline", fontSize: 14 }}>View Quiz →</a>
           </div>
         </div>
 
@@ -273,7 +280,7 @@ export default function AdminQuiz() {
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
-                    {["domain","subdomain","a","b","c","d","correct","rationale"].map(h => (
+                    {["domain","subdomain","question","a","b","c","d","correct","rationale"].map(h => (
                       <th key={h} style={{ textAlign: "left", padding: 8, borderBottom: "1px solid #e5e7eb", background: "#f8fafc" }}>{h}</th>
                     ))}
                   </tr>
@@ -283,6 +290,7 @@ export default function AdminQuiz() {
                     <tr key={i}>
                       <td style={{ padding: 8, borderBottom: "1px solid #f1f5f9" }}>{r.domain}</td>
                       <td style={{ padding: 8, borderBottom: "1px solid #f1f5f9" }}>{r.subdomain ?? ""}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f1f5f9" }}>{r.question}</td>
                       <td style={{ padding: 8, borderBottom: "1px solid #f1f5f9" }}>{r.a}</td>
                       <td style={{ padding: 8, borderBottom: "1px solid #f1f5f9" }}>{r.b}</td>
                       <td style={{ padding: 8, borderBottom: "1px solid #f1f5f9" }}>{r.c}</td>

@@ -1,191 +1,190 @@
 // pages/flashcards.tsx
 import { useEffect, useMemo, useState } from "react";
+import Head from "next/head";
 
 type Card = {
-  id: string;
+  id?: string;
   term: string;
-  definition: string | null;
+  definition: string;
   domain?: string | null;
   deck?: string | null;
   created_at?: string;
 };
 
-export default function Flashcards() {
+export default function FlashcardsPage() {
   const [cards, setCards] = useState<Card[]>([]);
+  const [idx, setIdx] = useState(0);
+  const [flipped, setFlipped] = useState(false);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  const [idx, setIdx] = useState(0);
-  const [flipped, setFlipped] = useState(false);
-  const [shuffle, setShuffle] = useState(true);
-  const [seed, setSeed] = useState<number>(() => Date.now());
-
-  // Deck from ?deck= (default GLOBAL)
-  const deck = useMemo(() => {
-    if (typeof window === "undefined") return "GLOBAL";
-    const d = new URLSearchParams(window.location.search).get("deck");
-    return d && d.trim() ? d.trim() : "GLOBAL";
-  }, [typeof window]);
-
+  // fetch cards
   useEffect(() => {
+    let alive = true;
     (async () => {
       try {
         setLoading(true);
-        const r = await fetch(`/api/flashcards?deck=${encodeURIComponent(deck)}`);
+        setErr(null);
+
+        const r = await fetch(`/api/flashcards?limit=500`);
         const j = await r.json();
         if (!j.ok) throw new Error(j.error || "Failed to load cards");
-        const list: Card[] = (j.data || []).filter(c => (c.term || "").trim().length > 0);
+
+        // ensure types & remove empties
+        const raw: unknown[] = Array.isArray(j.data) ? j.data : [];
+        const list: Card[] = raw
+          .map((row: any): Card => ({
+            id: row.id,
+            term: String(row.term ?? "").trim(),
+            definition: String(row.definition ?? "").trim(),
+            domain: row.domain ?? null,
+            deck: row.deck ?? null,
+            created_at: row.created_at,
+          }))
+          .filter((c: Card) => c.term.length > 0 && c.definition.length > 0);
+
+        if (!alive) return;
         setCards(list);
         setIdx(0);
         setFlipped(false);
-        setErr(list.length ? null : "No cards found in this deck.");
       } catch (e: any) {
-        setErr(e.message || "Failed to load cards");
+        if (!alive) return;
+        setErr(e?.message || "Load error");
       } finally {
-        setLoading(false);
+        if (alive) setLoading(false);
       }
     })();
-  }, [deck]);
+    return () => { alive = false; };
+  }, []);
 
-  // Seeded shuffle (stable across re-renders until seed changes)
-  const ordered = useMemo(() => {
-    const arr = cards.slice();
-    if (!shuffle) return arr;
-    let s = seed >>> 0;
-    const rnd = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 0xffffffff; };
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(rnd() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr;
-  }, [cards, shuffle, seed]);
+  const current = cards[idx] as Card | undefined;
+  const count = cards.length;
 
-  const current = ordered[idx];
-
-  function next() {
-    if (!ordered.length) return;
-    setIdx(i => (i + 1) % ordered.length);
+  function nextCard() {
+    setIdx((i) => (count === 0 ? 0 : (i + 1) % count));
     setFlipped(false);
   }
-  function prev() {
-    if (!ordered.length) return;
-    setIdx(i => (i - 1 + ordered.length) % ordered.length);
+  function prevCard() {
+    setIdx((i) => (count === 0 ? 0 : (i - 1 + count) % count));
     setFlipped(false);
   }
+  function flip() {
+    if (current) setFlipped((f) => !f);
+  }
 
-  // keyboard: Space/Enter flips; arrows move
+  // keyboard helpers
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!ordered.length) return;
-      if (e.key === " " || e.key === "Enter") { e.preventDefault(); setFlipped(f => !f); }
-      else if (e.key === "ArrowRight") { e.preventDefault(); next(); }
-      else if (e.key === "ArrowLeft") { e.preventDefault(); prev(); }
-    };
+    function onKey(e: KeyboardEvent) {
+      if (e.key === " ") { e.preventDefault(); flip(); }
+      else if (e.key === "ArrowRight") nextCard();
+      else if (e.key === "ArrowLeft") prevCard();
+    }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [ordered.length]);
+  }, [count, current]);
 
-  const btn = { padding: "8px 12px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff" } as const;
-  const badge = { fontSize: 11, padding: "2px 8px", background: "#f1f5f9", border: "1px solid #e2e8f0", borderRadius: 999 } as const;
+  const subtitle = useMemo(() => {
+    if (!current) return "";
+    const deck = current.deck ?? "GLOBAL";
+    const dom = current.domain ?? "";
+    return dom ? `${deck} · ${dom}` : deck;
+  }, [current]);
 
   return (
-    <div style={{ maxWidth: 860, margin: "40px auto", padding: 16, fontFamily: "system-ui, -apple-system, Segoe UI" }}>
-      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 16 }}>
-        <h1 style={{ margin: 0 }}>Flashcards</h1>
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <label style={{ fontSize: 12, opacity: 0.75 }}>Deck:</label>
-          <input
-            defaultValue={deck}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                const v = (e.target as HTMLInputElement).value.trim() || "GLOBAL";
-                const url = new URL(window.location.href);
-                url.searchParams.set("deck", v);
-                window.location.href = url.toString();
-              }
-            }}
-            placeholder="GLOBAL"
-            style={{ padding: "6px 10px", border: "1px solid #e5e7eb", borderRadius: 8 }}
-          />
-          <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}>
-            <input
-              type="checkbox"
-              checked={shuffle}
-              onChange={(e) => { setShuffle(e.target.checked); setSeed(Date.now()); setIdx(0); setFlipped(false); }}
-            />
-            Shuffle
-          </label>
-          <a href="/safmeds" style={{ textDecoration: "underline" }}>SAFMEDS →</a>
-        </div>
-      </header>
+    <>
+      <Head><title>MyABA | Flashcards</title></Head>
+      <main className="page">
+        <h1 className="text-2xl font-semibold mb-3">Flashcards</h1>
 
-      {loading && <p style={{ opacity: 0.7 }}>Loading…</p>}
-      {err && <p style={{ color: "#b91c1c" }}>{err}</p>}
-
-      {!loading && !err && ordered.length > 0 && (
-        <>
-          <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>
-            Card {idx + 1} of {ordered.length}
+        {loading && <div className="rounded-xl border border-slate-200 bg-white p-4">Loading…</div>}
+        {err && !loading && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-700">
+            {err}
           </div>
+        )}
 
-          {/* Single card viewer: front/back swap (no 3D) */}
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => setFlipped(f => !f)}
-            onKeyDown={(e) => (e.key === " " || e.key === "Enter") && setFlipped(f => !f)}
-            style={{
-              position: "relative",
-              height: 260,
-              border: "1px solid #e5e7eb",
-              borderRadius: 12,
-              overflow: "hidden",
-              boxShadow: "0 1px 2px rgba(0,0,0,0.06)",
-              background: "#fff",
-              cursor: "pointer",
-            }}
-            title={flipped ? "Click to show term" : "Click to reveal definition"}
-          >
-            {/* FRONT (term) */}
-            <div
-              style={{
-                position: "absolute", inset: 0, padding: 16, display: "flex", flexDirection: "column",
-                opacity: flipped ? 0 : 1, visibility: flipped ? "hidden" : "visible",
-                transition: "opacity .18s ease, visibility .18s ease",
-              }}
-            >
-              <strong style={{ fontSize: 20, lineHeight: 1.25, wordBreak: "break-word" }}>{current?.term}</strong>
-              <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <span style={badge}>{current?.deck || "GLOBAL"}</span>
-                {current?.domain && <span style={badge}>{current.domain}</span>}
+        {!loading && !err && (
+          <>
+            {!current ? (
+              <div className="rounded-xl border border-slate-200 bg-white p-6">
+                <div className="text-slate-700">No cards yet.</div>
+                <div className="text-sm text-slate-500 mt-1">
+                  Try uploading CSV on the <a className="underline" href="/admin">Admin</a> page.
+                </div>
               </div>
-              <p style={{ marginTop: "auto", fontSize: 12, opacity: 0.6 }}>Click / Space to reveal definition</p>
-            </div>
+            ) : (
+              <>
+                {/* Card */}
+                <div
+                  className={`card-surface relative preserve-3d`}
+                  style={{
+                    perspective: 1000,
+                  }}
+                >
+                  {/* shared base styles for both faces */}
+                  <div
+                    className={`absolute inset-0 rounded-2xl shadow bg-white border border-slate-200 p-6 transition-transform duration-300 backface-hidden`}
+                    style={{ transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)" }}
+                    onClick={flip}
+                    role="button"
+                    aria-label="flip card"
+                  >
+                    <div className="text-xs text-slate-500">{subtitle}</div>
+                    <div className="mt-2 text-2xl font-semibold text-slate-900 select-none">
+                      {current.term}
+                    </div>
+                    <div className="absolute bottom-4 left-0 right-0 text-center text-slate-400 text-sm">
+                      Click / Space to flip
+                    </div>
+                  </div>
 
-            {/* BACK (definition only) */}
-            <div
-              style={{
-                position: "absolute", inset: 0, padding: 16, display: "flex", flexDirection: "column",
-                opacity: flipped ? 1 : 0, visibility: flipped ? "visible" : "hidden",
-                transition: "opacity .18s ease, visibility .18s ease",
-                background: "#0f172a", color: "#fff",
-              }}
-            >
-              <div style={{ whiteSpace: "pre-line", lineHeight: 1.6, wordBreak: "break-word", fontSize: 16 }}>
-                {(current?.definition && current.definition.trim().length > 0) ? current.definition : "(no definition)"}
-              </div>
-              <span style={{ marginTop: "auto", fontSize: 12, opacity: 0.8 }}>Click / Space to flip back</span>
-            </div>
-          </div>
+                  <div
+                    className={`absolute inset-0 rounded-2xl shadow bg-white border border-slate-200 p-6 transition-transform duration-300 backface-hidden rotate-y-180`}
+                    style={{ transform: flipped ? "rotateY(0deg)" : "rotateY(-180deg)" }}
+                    onClick={flip}
+                    role="button"
+                    aria-label="flip card"
+                  >
+                    <div className="text-xs text-slate-500">{subtitle}</div>
+                    <div className="mt-2 text-xl text-slate-800 leading-relaxed whitespace-pre-wrap select-none">
+                      {current.definition}
+                    </div>
+                    <div className="absolute bottom-4 left-0 right-0 text-center text-slate-400 text-sm">
+                      Click / Space to flip back
+                    </div>
+                  </div>
+                </div>
 
-          {/* Controls */}
-          <div style={{ display: "flex", gap: 12, marginTop: 12 }}>
-            <button onClick={prev} style={btn}>← Prev</button>
-            <button onClick={() => setFlipped(f => !f)} style={btn}>{flipped ? "Show Term" : "Show Definition"}</button>
-            <button onClick={next} style={btn}>Next →</button>
-          </div>
-        </>
-      )}
-    </div>
+                {/* Controls */}
+                <div className="mt-4 flex items-center gap-2">
+                  <button
+                    onClick={prevCard}
+                    className="rounded-lg border px-3 py-2 bg-white border-slate-200 hover:border-slate-300"
+                  >
+                    ← Prev
+                  </button>
+                  <button
+                    onClick={flip}
+                    className="rounded-lg border px-3 py-2 bg-white border-slate-200 hover:border-slate-300"
+                  >
+                    Flip
+                  </button>
+                  <button
+                    onClick={nextCard}
+                    className="rounded-lg border px-3 py-2 bg-white border-slate-200 hover:border-slate-300"
+                  >
+                    Next →
+                  </button>
+
+                  <div className="ml-auto text-sm text-slate-600">
+                    {idx + 1} / {count}
+                  </div>
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </main>
+    </>
   );
 }

@@ -51,18 +51,33 @@ async function readCSVFileSmart(file: File): Promise<string> {
   return s.normalize?.("NFC") ?? s;
 }
 
-/* ---------- Client-side chunked POST helper (keeps payloads small on Vercel) ---------- */
-async function postChunks<T>(url: string, rows: T[], chunkSize = 300) {
+/* ---------- Client-side chunked POST helper (progress + rich errors) ---------- */
+async function postChunks<T>(url: string, rows: T[], chunkSize = 300, dryRun = false) {
   let insertedTotal = 0;
+  const totalChunks = Math.ceil(rows.length / chunkSize);
+
   for (let i = 0; i < rows.length; i += chunkSize) {
     const chunk = rows.slice(i, i + chunkSize);
-    const resp = await fetch(url, {
+    const chunkNum = i / chunkSize + 1;
+    const u = dryRun ? `${url}?dryRun=1` : url;
+
+    console.log(`[quiz-bulk] uploading chunk ${chunkNum}/${totalChunks} (${chunk.length} rows)`);
+
+    const resp = await fetch(u, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(chunk),
     });
-    const j = await resp.json();
-    if (!j.ok) throw new Error(j.error || `Upload failed at chunk ${i / chunkSize}`);
+
+    const text = await resp.text();
+    let j: any = {};
+    try { j = JSON.parse(text); } catch { /* keep raw text in error */ }
+
+    if (!resp.ok || j?.ok === false) {
+      const msg = j?.error || text || `HTTP ${resp.status} ${resp.statusText}`;
+      throw new Error(`Chunk ${chunkNum}/${totalChunks} failed: ${msg}`);
+    }
+
     insertedTotal += Number(j.inserted || 0);
   }
   return insertedTotal;
@@ -72,7 +87,7 @@ async function postChunks<T>(url: string, rows: T[], chunkSize = 300) {
 type Row = {
   domain: string;
   subdomain?: string | null;   // can be blank
-  question: string;            // <-- required
+  question: string;            // required (accepts "question" or "prompt" header)
   a: string;
   b: string;
   c: string;
@@ -90,7 +105,7 @@ export default function AdminQuiz() {
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // --- CSV parser (quotes/commas/newlines) ---
+  /* ---------- CSV parser (quotes/commas/newlines) ---------- */
   function splitCSVLine(line: string): string[] {
     const out: string[] = [];
     let cur = "";
@@ -120,7 +135,7 @@ export default function AdminQuiz() {
     const idx = {
       domain: header.findIndex(h => h === "domain"),
       subdomain: header.findIndex(h => h === "subdomain"),
-      question: header.findIndex(h => h === "question" || h === "prompt"), // <-- accept both
+      question: header.findIndex(h => h === "question" || h === "prompt"),
       a: header.findIndex(h => h === "a"),
       b: header.findIndex(h => h === "b"),
       c: header.findIndex(h => h === "c"),
@@ -140,7 +155,7 @@ export default function AdminQuiz() {
       const cols = splitCSVLine(lines[i]);
       const domain = (cols[idx.domain] ?? "").trim();
       const subdomain = idx.subdomain >= 0 ? (cols[idx.subdomain] ?? "").trim() : "";
-      const question = (cols[idx.question] ?? "").trim(); // <-- capture question
+      const question = (cols[idx.question] ?? "").trim();
       const a = (cols[idx.a] ?? "").trim();
       const b = (cols[idx.b] ?? "").trim();
       const c = (cols[idx.c] ?? "").trim();
@@ -148,7 +163,7 @@ export default function AdminQuiz() {
       const correct = (cols[idx.correct] ?? "").trim().toUpperCase();
       const rationale = idx.rationale >= 0 ? (cols[idx.rationale] ?? "").trim() : "";
 
-      if (!domain || !question || !a || !b || !c || !d) continue;    // <-- require question
+      if (!domain || !question || !a || !b || !c || !d) continue;
       if (!["A", "B", "C", "D"].includes(correct)) continue;
 
       out.push({
@@ -163,6 +178,7 @@ export default function AdminQuiz() {
     return out;
   }
 
+  /* ---------- File handling ---------- */
   async function handleSelectedFile(f: File) {
     setFile(f);
     setStatus(null);
@@ -170,7 +186,7 @@ export default function AdminQuiz() {
     setRows([]);
     try {
       if (f.size > 50 * 1024 * 1024) throw new Error("File too large (max 50 MB).");
-      const text = await readCSVFileSmart(f); // <-- robust decoder
+      const text = await readCSVFileSmart(f);
       const parsed = parseCSV(text);
       setRows(parsed);
       if (!parsed.length) setStatus("No valid rows found.");
@@ -189,7 +205,7 @@ export default function AdminQuiz() {
     if (f) void handleSelectedFile(f);
   }
 
-  // upload
+  /* ---------- Upload ---------- */
   const preview = useMemo(() => rows.slice(0, 10), [rows]);
 
   async function onUpload() {
@@ -203,18 +219,33 @@ export default function AdminQuiz() {
         return;
       }
 
-      // Chunked client-side upload
-      const inserted = await postChunks("/api/quiz-bulk", rows, 300);
-      setStatus(`Uploaded ${inserted} rows ✅`);
+      // Toggle DRY RUN here (no DB writes when true)
+      const DRY_RUN = false;
+
+      const inserted = await postChunks("/api/quiz-bulk", rows, 300, DRY_RUN);
+      setStatus(
+        DRY_RUN
+          ? `Dry run OK ✅ (validated ${rows.length} rows)`
+          : `Uploaded ${inserted} rows ✅`
+      );
     } catch (e: any) {
+      console.error(e);
       setError(e?.message || "Bulk insert failed");
     } finally {
       setBusy(false);
     }
   }
 
-  // styles
-  const dropBase: React.CSSProperties = { border: "2px dashed #94a3b8", borderRadius: 12, padding: 24, background: "#f8fafc", textAlign: "center", cursor: "pointer", userSelect: "none" };
+  /* ---------- Styles ---------- */
+  const dropBase: React.CSSProperties = {
+    border: "2px dashed #94a3b8",
+    borderRadius: 12,
+    padding: 24,
+    background: "#f8fafc",
+    textAlign: "center",
+    cursor: "pointer",
+    userSelect: "none",
+  };
   const dropActive: React.CSSProperties = { borderColor: "#0ea5e9", background: "#eff6ff" };
 
   return (

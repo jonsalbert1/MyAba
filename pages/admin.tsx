@@ -1,84 +1,17 @@
 // pages/admin.tsx
 import { useMemo, useRef, useState } from "react";
 
-/* ---------- Robust CSV decoder (UTF-8/UTF-16/CP1252-safe) ---------- */
-async function readCSVFileSmart(file: File): Promise<string> {
-  const buf = await file.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-async function postChunks<T>(url: string, rows: T[], chunkSize = 350) {
-  let insertedTotal = 0;
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const chunk = rows.slice(i, i + chunkSize);
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(chunk),
-    });
-    const j = await resp.json();
-    if (!j.ok) throw new Error(j.error || `Upload failed at chunk ${i/chunkSize}`);
-    insertedTotal += Number(j.inserted || 0);
-  }
-  return insertedTotal;
-}
-
-  // BOM sniff
-  if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
-    return new TextDecoder("utf-8").decode(bytes.slice(3));
-  }
-  if (bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE) {
-    return new TextDecoder("utf-16le").decode(bytes.slice(2));
-  }
-  if (bytes.length >= 2 && bytes[0] === 0xFE && bytes[1] === 0xFF) {
-    return new TextDecoder("utf-16be").decode(bytes.slice(2));
-  }
-
-  // 1) strict UTF-8
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch { /* keep trying */ }
-
-  // 2) Windows-1252 (if supported)
-  try {
-    const w = new TextDecoder("windows-1252", { fatal: false }).decode(bytes);
-    const bad = (w.match(/\uFFFD/g) || []).length;
-    if (bad < 2) return w;
-  } catch { /* continue */ }
-
-  // 3) Latin-1 decode + map CP1252 punctuation
-  let s = new TextDecoder("iso-8859-1").decode(bytes);
-  const cp1252Map: Record<string, string> = {
-    "\x80": "€", "\x82": "‚", "\x83": "ƒ", "\x84": "„", "\x85": "…", "\x86": "†", "\x87": "‡",
-    "\x88": "ˆ", "\x89": "‰", "\x8A": "Š", "\x8B": "‹", "\x8C": "Œ", "\x8E": "Ž",
-    "\x91": "‘", "\x92": "’", "\x93": "“", "\x94": "”", "\x95": "•", "\x96": "–", "\x97": "—",
-    "\x98": "˜", "\x99": "™", "\x9A": "š", "\x9B": "›", "\x9C": "œ", "\x9E": "ž", "\x9F": "Ÿ"
-  };
-  s = s.replace(/[\x80-\x9F]/g, ch => cp1252Map[ch] ?? ch);
-
-  // 4) Common mojibake repairs
-  s = s
-    .replace(/â€“/g, "–")
-    .replace(/â€”/g, "—")
-    .replace(/â€˜/g, "‘")
-    .replace(/â€™/g, "’")
-    .replace(/â€œ/g, "“")
-    .replace(/â€/g, "”")
-    .replace(/â€¢/g, "•")
-    .replace(/â€¦/g, "…")
-    .replace(/Ã©/g, "é");
-
-  if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
-  return s.normalize?.("NFC") ?? s;
-}
-
-/* ---------- shared CSV helpers ---------- */
+/* ---------- CSV helpers ---------- */
 function splitCSVLine(line: string): string[] {
   const out: string[] = [];
   let cur = "", inQ = false;
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (inQ) {
-      if (ch === `"`) { if (line[i + 1] === `"`) { cur += `"`; i++; } else inQ = false; }
-      else cur += ch;
+      if (ch === `"`) {
+        if (line[i + 1] === `"`) { cur += `"`; i++; }
+        else inQ = false;
+      } else cur += ch;
     } else {
       if (ch === `"`) inQ = true;
       else if (ch === ",") { out.push(cur); cur = ""; }
@@ -131,7 +64,7 @@ function useFlashcardsUploader() {
     setFile(f); setStatus(null); setError(null); setRows([]);
     try {
       if (f.size > 50 * 1024 * 1024) throw new Error("File too large (max 50 MB).");
-      const text = await readCSVFileSmart(f);
+      const text = await f.text();
       const parsed = parseCSV(text);
       setRows(parsed);
       setStatus(parsed.length ? `Parsed ${parsed.length} rows. Ready to upload.` : "No valid rows found.");
@@ -146,9 +79,19 @@ function useFlashcardsUploader() {
   async function upload() {
     try {
       setBusy(true); setStatus(null); setError(null);
-      const ready = rows.map(r => ({ term: r.term, definition: r.definition, domain: r.domain ?? null, deck: r.deck ?? defaultDeck || "GLOBAL" }));
+      const ready = rows.map(r => ({
+        term: r.term,
+        definition: r.definition,
+        domain: r.domain ?? null,
+        // **** FIXED: parenthesize ?? before ||
+        deck: (r.deck ?? defaultDeck) || "GLOBAL",
+      }));
       if (!ready.length) { setStatus("Nothing to upload."); return; }
-      const resp = await fetch("/api/flashcards-bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ready) });
+      const resp = await fetch("/api/flashcards-bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ready),
+      });
       const j = await resp.json();
       if (!j.ok) throw new Error(j.error || "Bulk insert failed");
       setStatus(`Uploaded ${j.inserted} rows ✅`);
@@ -156,7 +99,17 @@ function useFlashcardsUploader() {
     finally { setBusy(false); }
   }
 
-  return { state: { file, rows, defaultDeck, status, error, busy, dragOver }, setDefaultDeck, inputRef, handleSelectedFile, onDragOver, onDragLeave, onDrop, upload, preview };
+  return {
+    state: { file, rows, defaultDeck, status, error, busy, dragOver },
+    setDefaultDeck,
+    inputRef,
+    handleSelectedFile,
+    onDragOver,
+    onDragLeave,
+    onDrop,
+    upload,
+    preview
+  };
 }
 
 /* ---------- Quiz tab ---------- */
@@ -208,7 +161,7 @@ function useQuizUploader() {
       const correct = (cols[idx.correct] ?? "").trim().toUpperCase();
       const rationale = idx.rationale >= 0 ? (cols[idx.rationale] ?? "").trim() : "";
       if (!domain || !question || !a || !b || !c || !d) continue;
-      if (!["A", "B", "C", "D"].includes(correct)) continue;
+      if (!["A","B","C","D"].includes(correct)) continue;
       out.push({ domain, subdomain: subdomain || null, question, a, b, c, d, correct, rationale: rationale || null });
     }
     return out;
@@ -218,7 +171,7 @@ function useQuizUploader() {
     setFile(f); setStatus(null); setError(null); setRows([]);
     try {
       if (f.size > 50 * 1024 * 1024) throw new Error("File too large (max 50 MB).");
-      const text = await readCSVFileSmart(f);
+      const text = await f.text();
       const parsed = parseCSV(text);
       setRows(parsed);
       setStatus(parsed.length ? `Parsed ${parsed.length} rows. Ready to upload.` : "No valid rows found.");
@@ -234,7 +187,11 @@ function useQuizUploader() {
     try {
       setBusy(true); setStatus(null); setError(null);
       if (!rows.length) { setStatus("Nothing to upload."); return; }
-      const resp = await fetch("/api/quiz-bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(rows) });
+      const resp = await fetch("/api/quiz-bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(rows),
+      });
       const j = await resp.json();
       if (!j.ok) throw new Error(j.error || "Bulk insert failed");
       setStatus(`Uploaded ${j.inserted} rows ✅`);

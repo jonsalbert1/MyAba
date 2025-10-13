@@ -1,11 +1,18 @@
 // pages/_app.tsx
 import type { AppProps } from "next/app";
-import "../styles/globals.css";            // <-- required
-import NavBar from "../components/NavBar"; // ok to keep
+import Head from "next/head";
+import NavBar from "../components/NavBar";
+import "../styles/globals.css";
 
-export default function MyApp({ Component, pageProps }: AppProps) {
+export default function App({ Component, pageProps }: AppProps) {
   return (
     <>
+      <Head>
+        {/* Proper scaling on phones/tablets */}
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>MyABA</title>
+      </Head>
+
       <NavBar />
       <Component {...pageProps} />
     </>

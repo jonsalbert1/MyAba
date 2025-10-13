@@ -1,92 +1,147 @@
-// pages/quiz.tsx
 import { useEffect, useMemo, useState } from "react";
-import Head from "next/head";
 
-type Q = {
-  id?: number;
-  question: string;
-  a: string; b: string; c: string; d: string;
-  answer: "a" | "b" | "c" | "d";
-  rationale?: string;
+type Item = {
+  id: string;
+  prompt: string;
+  choice_a: string;
+  choice_b: string;
+  choice_c: string;
+  choice_d: string;
+  correct_choice: "A" | "B" | "C" | "D";
+  rationale?: string | null;
+  domain?: string | null;
+  subdomain?: string | null;
 };
 
 export default function QuizPage() {
-  const [items, setItems] = useState<Q[]>([]);
+  const [items, setItems] = useState<Item[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
   const [i, setI] = useState(0);
-  const [chosen, setChosen] = useState<null | "a" | "b" | "c" | "d">(null);
+  const [picked, setPicked] = useState<"A" | "B" | "C" | "D" | null>(null);
+  const [showAns, setShowAns] = useState(false);
+
+  const [correctCount, setCorrectCount] = useState(0);
+  const [wrongCount, setWrongCount] = useState(0);
+
+  const domain = useMemo(() => (typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("domain") || ""), []);
+  const subdomain = useMemo(() => (typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("subdomain") || ""), []);
 
   useEffect(() => {
-    // TODO: swap to your API when ready; placeholder data for styling
-    setItems([
-      { question: "What does SD stand for?", a: "Stimulus Delta", b: "Stimulus Discriminator", c: "Discriminative Stimulus", d: "Differential Stimulus", answer: "c", rationale: "SD signals availability of reinforcement for a response." },
-      { question: "MO stands for…", a: "Motivating Operation", b: "Maintenance Objective", c: "Mastery Outcome", d: "Multiple Operant", answer: "a", rationale: "MOs alter the value of a reinforcer and the current frequency of behavior." },
-    ]);
-  }, []);
+    (async () => {
+      try {
+        setLoading(true);
+        const qs = new URLSearchParams();
+        if (domain) qs.set("domain", domain);
+        if (subdomain) qs.set("subdomain", subdomain);
+        const r = await fetch(`/api/quiz-items?${qs.toString()}`);
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || "Failed to load quiz");
+        const list: Item[] = j.data || [];
+        setItems(list);
+        setI(0); setPicked(null); setShowAns(false);
+        setCorrectCount(0); setWrongCount(0);
+        setErr(list.length ? null : "No quiz items found. Check CSV and filters.");
+      } catch (e: any) { setErr(e.message || "Failed to load quiz"); }
+      finally { setLoading(false); }
+    })();
+  }, [domain, subdomain]);
 
-  const q = items[i];
-  const isCorrect = useMemo(() => chosen && q && chosen === q.answer, [chosen, q]);
+  const cur = items[i];
 
-  const choose = (opt: "a" | "b" | "c" | "d") => setChosen(opt);
-  const next = () => { setChosen(null); setI(x => (items.length ? (x + 1) % items.length : 0)); };
+  async function logAnswer(pickedChoice: "A" | "B" | "C" | "D") {
+    if (!cur) return;
+    try {
+      await fetch("/api/quiz-answers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item_id: cur.id,
+          picked_choice: pickedChoice,
+          correct_choice: cur.correct_choice,
+          domain: cur.domain ?? null,
+          subdomain: cur.subdomain ?? null
+        })
+      });
+    } catch {/* best-effort */}
+  }
 
-  const btnClass = (opt: "a" | "b" | "c" | "d") => {
-    if (!chosen) return "bg-white border hover:border-blue-300";
-    if (opt === q.answer) return "bg-green-100 border-green-500";
-    if (opt === chosen) return "bg-red-100 border-red-500";
-    return "bg-white border";
+  async function onPick(ch: "A" | "B" | "C" | "D") {
+    if (showAns || !cur) return;
+    setPicked(ch); setShowAns(true);
+    void logAnswer(ch);
+    if (ch === cur.correct_choice) setCorrectCount(n => n + 1);
+    else setWrongCount(n => n + 1);
+  }
+
+  function next() {
+    if (!items.length) return;
+    setI(n => (n + 1) % items.length);
+    setPicked(null); setShowAns(false);
+  }
+
+  const choiceBtn = (label: "A" | "B" | "C" | "D", text: string) => {
+    const isPicked = picked === label;
+    const isCorrect = cur?.correct_choice === label;
+    const base = "w-full text-left rounded-xl border px-3 py-2";
+    let cls = `${base} border-slate-200 bg-white`;
+    if (showAns) {
+      if (isCorrect) cls = `${base} border-green-500 bg-green-50`;
+      else if (isPicked) cls = `${base} border-red-500 bg-red-50`;
+    } else if (isPicked) cls = `${base} border-sky-500 bg-sky-50`;
+    return (
+      <button key={label} onClick={() => onPick(label)} disabled={showAns} className={cls}>
+        <b className="inline-block w-6">{label}.</b> {text}
+      </button>
+    );
   };
 
   return (
-    <>
-      <Head><title>myABA | Quiz</title></Head>
-      <main className="min-h-screen px-6 py-8">
-        <h1 className="text-3xl font-extrabold text-blue-900 mb-4">Quiz</h1>
+    <div className="page max-w-[820px]">
+      <header className="mb-4 flex items-center gap-3">
+        <h1 className="m-0 text-2xl font-semibold">Quiz</h1>
+        <span className="text-xs opacity-70">
+          {domain && <>Domain: <b>{domain}</b> · </>}
+          {subdomain && <>Subdomain: <b>{subdomain}</b> · </>}
+          {items.length > 0 && <>Item {i + 1} of {items.length}</>}
+        </span>
+        <div className="ml-auto" />
+        <div className="rounded-full border border-slate-200 px-3 py-1 text-xs">
+          ✅ {correctCount} &nbsp;•&nbsp; ❌ {wrongCount}
+        </div>
+        <a href="/admin" className="ml-2 text-sm underline">Admin →</a>
+      </header>
 
-        {!q ? (
-          <p className="text-gray-600">Loading questions…</p>
-        ) : (
-          <div className="max-w-3xl space-y-4">
-            <div className="bg-white rounded-2xl shadow p-6">
-              <div className="text-sm text-gray-500 mb-2">
-                Question {i + 1} / {items.length}
-              </div>
-              <div className="text-xl font-semibold mb-4">{q.question}</div>
+      {loading && <p className="opacity-70">Loading…</p>}
+      {err && <p className="text-red-700">{err}</p>}
 
-              <div className="grid gap-3">
-                {(["a", "b", "c", "d"] as const).map((opt) => (
-                  <button
-                    key={opt}
-                    onClick={() => choose(opt)}
-                    disabled={!!chosen}
-                    className={`text-left rounded-xl px-4 py-3 border transition ${btnClass(opt)}`}
-                  >
-                    <span className="font-semibold mr-2">{opt.toUpperCase()}.</span>
-                    {q[opt]}
-                  </button>
-                ))}
-              </div>
-
-              {chosen && (
-                <div className={`mt-4 rounded-xl p-4 ${isCorrect ? "bg-green-50 border border-green-400" : "bg-red-50 border border-red-400"}`}>
-                  <div className="font-bold mb-1">
-                    {isCorrect ? "✅ Correct" : "❌ Incorrect"}
-                  </div>
-                  {q.rationale && <div className="text-sm text-gray-700">{q.rationale}</div>}
-                </div>
-              )}
-
-              <div className="mt-4">
-                <button
-                  onClick={next}
-                  className="bg-blue-900 text-white px-4 py-2 rounded-xl font-semibold hover:bg-blue-800"
-                >
-                  Next
-                </button>
-              </div>
-            </div>
+      {!loading && !err && cur && (
+        <div className="rounded-xl border border-slate-200 bg-white p-4">
+          <div className="mb-3 whitespace-pre-wrap text-lg">{cur.prompt}</div>
+          <div className="grid gap-2">
+            {choiceBtn("A", cur.choice_a)}
+            {choiceBtn("B", cur.choice_b)}
+            {choiceBtn("C", cur.choice_c)}
+            {choiceBtn("D", cur.choice_d)}
           </div>
-        )}
-      </main>
-    </>
+
+          {showAns && (
+            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <div><b>Correct:</b> {cur.correct_choice}</div>
+              {!!cur.rationale && <div className="mt-1 whitespace-pre-wrap"><b>Rationale:</b> {cur.rationale}</div>}
+            </div>
+          )}
+
+          <div className="mt-3 flex gap-2">
+            <button onClick={next} className="touch-target rounded-xl border border-slate-200 bg-white px-4 py-2">
+              Next →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!loading && !err && !cur && <p className="opacity-80">No items found. Try a different <code>?domain=</code> or upload more rows in Admin.</p>}
+    </div>
   );
 }

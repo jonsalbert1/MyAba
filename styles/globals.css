@@ -1,6 +1,75 @@
 @import "tailwindcss";
 
+/* ---------- Global design tokens ---------- */
+:root {
+  --container-px: clamp(12px, 3vw, 20px);
+  --radius: 12px;
+}
+
+/* ---------- Base tweaks ---------- */
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+img, svg, video { max-width: 100%; height: auto; }
+
+/* Respect iOS safe areas on devices with a home indicator */
+body { padding-bottom: env(safe-area-inset-bottom); }
+
+/* Prevent iOS input zoom */
+input, textarea, select { font-size: 16px; }
+
+/* Your existing base theme */
 body {
   @apply bg-gray-50 text-gray-900;
   font-family: system-ui, sans-serif;
+}
+
+/* ---------- Responsive helpers ---------- */
+
+/* Wrap tables so they don't blow layout on small screens */
+.table-wrap { overflow-x: auto; }
+
+/* Improve tap targets on mobile */
+.touch-target { min-height: 44px; }
+
+/* A generic page container; optional helper */
+.page {
+  max-width: 1000px;
+  margin: clamp(16px, 4vw, 40px) auto;
+  padding: var(--container-px);
+}
+
+/* A centered card surface that scales on phones */
+.card-surface {
+  width: 100%;
+  max-width: 560px;
+  min-height: clamp(220px, 50vh, 420px);
+  margin: 0 auto;
+  border-radius: var(--radius);
+}
+
+/* Reduce motion for users who prefer it */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ---------- Flip-card utilities (WebKit-safe) ---------- */
+@layer utilities {
+  /* Make faces invisible when they rotate away (Safari needs the prefix) */
+  .backface-hidden { backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+
+  /* Keep children in 3D so the back face actually sits “behind” (Safari needs the prefix) */
+  .preserve-3d { transform-style: preserve-3d; -webkit-transform-style: preserve-3d; }
+
+  /* 180° Y rotation for the back face/container */
+  .rotate-y-180 { transform: rotateY(180deg); }
+
+  /* Tiny GPU hint to prevent black flicker on some devices */
+  .gpu-hint { transform: translateZ(0); -webkit-transform: translateZ(0); }
+
+  /* Optional: a convenient perspective utility if you don't want bracket syntax */
+  .perspective-1200 { perspective: 1200px; }
 }

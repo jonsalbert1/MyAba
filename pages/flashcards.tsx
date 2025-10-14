@@ -1,189 +1,146 @@
-// pages/flashcards.tsx
-import { useEffect, useMemo, useState } from "react";
-import Head from "next/head";
+import Head from 'next/head';
+import { useEffect, useState, useCallback } from 'react';
 
 type Card = {
-  id?: string;
-  term: string;
-  definition: string;
-  domain?: string | null;
+  id: string;
+  term?: string | null;
+  definition?: string | null;
   deck?: string | null;
-  created_at?: string;
+  created_at?: string | null;
 };
 
 export default function FlashcardsPage() {
   const [cards, setCards] = useState<Card[]>([]);
   const [idx, setIdx] = useState(0);
-  const [flipped, setFlipped] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
+  const [showDef, setShowDef] = useState(false);
+  const [msg, setMsg] = useState('loading…');
 
-  // fetch cards
   useEffect(() => {
-    let alive = true;
     (async () => {
       try {
-        setLoading(true);
-        setErr(null);
-
-        const r = await fetch(`/api/flashcards?limit=500`);
+        const r = await fetch('/api/flashcards');
         const j = await r.json();
-        if (!j.ok) throw new Error(j.error || "Failed to load cards");
-
-        // ensure types & remove empties
-        const raw: unknown[] = Array.isArray(j.data) ? j.data : [];
-        const list: Card[] = raw
-          .map((row: any): Card => ({
-            id: row.id,
-            term: String(row.term ?? "").trim(),
-            definition: String(row.definition ?? "").trim(),
-            domain: row.domain ?? null,
-            deck: row.deck ?? null,
-            created_at: row.created_at,
-          }))
-          .filter((c: Card) => c.term.length > 0 && c.definition.length > 0);
-
-        if (!alive) return;
-        setCards(list);
-        setIdx(0);
-        setFlipped(false);
+        if (!j.ok) throw new Error(j.error || 'API error');
+        setCards(j.data || []);
+        setMsg(`loaded ${j.data?.length ?? 0} cards`);
       } catch (e: any) {
-        if (!alive) return;
-        setErr(e?.message || "Load error");
-      } finally {
-        if (alive) setLoading(false);
+        setMsg(`fetch error: ${e.message}`);
       }
     })();
-    return () => { alive = false; };
   }, []);
 
-  const current = cards[idx] as Card | undefined;
-  const count = cards.length;
-
-  function nextCard() {
-    setIdx((i) => (count === 0 ? 0 : (i + 1) % count));
-    setFlipped(false);
-  }
-  function prevCard() {
-    setIdx((i) => (count === 0 ? 0 : (i - 1 + count) % count));
-    setFlipped(false);
-  }
-  function flip() {
-    if (current) setFlipped((f) => !f);
-  }
-
-  // keyboard helpers
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === " ") { e.preventDefault(); flip(); }
-      else if (e.key === "ArrowRight") nextCard();
-      else if (e.key === "ArrowLeft") prevCard();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [count, current]);
+    if (!cards.length) { setIdx(0); setShowDef(false); return; }
+    setIdx(i => Math.min(i, cards.length - 1));
+    setShowDef(false);
+  }, [cards.length]);
 
-  const subtitle = useMemo(() => {
-    if (!current) return "";
-    const deck = current.deck ?? "GLOBAL";
-    const dom = current.domain ?? "";
-    return dom ? `${deck} · ${dom}` : deck;
-  }, [current]);
+  useEffect(() => { setShowDef(false); }, [idx]);
+
+  const next = useCallback(() => {
+    if (!cards.length) return;
+    setIdx(i => (i + 1) % cards.length);
+  }, [cards.length]);
+
+  const prev = useCallback(() => {
+    if (!cards.length) return;
+    setIdx(i => (i - 1 + cards.length) % cards.length);
+  }, [cards.length]);
+
+  const flip = useCallback(() => setShowDef(s => !s), []);
+
+  // Keyboard shortcuts: ←/→ navigate, Space flips
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowRight') { e.preventDefault(); next(); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); prev(); }
+      else if (e.code === 'Space') { e.preventDefault(); flip(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [next, prev, flip]);
+
+  if (!cards.length) {
+    return (
+      <>
+        <Head><title>Flashcards • MyABA</title></Head>
+        <main className="mx-auto max-w-3xl p-6">
+          <p className="text-sm text-zinc-600">{msg}</p>
+        </main>
+      </>
+    );
+  }
+
+  const c = cards[idx];
+
+  // Button wrappers that stop bubbling to the card click
+  const onPrevClick: React.MouseEventHandler<HTMLButtonElement> = (e) => {
+    e.preventDefault(); e.stopPropagation(); prev();
+  };
+  const onNextClick: React.MouseEventHandler<HTMLButtonElement> = (e) => {
+    e.preventDefault(); e.stopPropagation(); next();
+  };
+  const onFlipClick: React.MouseEventHandler<HTMLButtonElement> = (e) => {
+    e.preventDefault(); e.stopPropagation(); flip();
+  };
 
   return (
     <>
-      <Head><title>MyABA | Flashcards</title></Head>
-      <main className="page">
-        <h1 className="text-2xl font-semibold mb-3">Flashcards</h1>
+      <Head>
+        <title>Flashcards • MyABA</title>
+        <meta name="description" content="Study your flashcards with flip and keyboard navigation." />
+      </Head>
 
-        {loading && <div className="rounded-xl border border-slate-200 bg-white p-4">Loading…</div>}
-        {err && !loading && (
-          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-700">
-            {err}
+      <main className="mx-auto max-w-3xl p-6">
+        <div className="mb-4 flex items-center justify-between">
+          <h1 className="text-xl font-semibold tracking-tight">Flashcards</h1>
+          <div className="text-sm text-zinc-500">
+            Card <span className="font-medium text-zinc-800">{idx + 1}</span> / {cards.length}
           </div>
-        )}
+        </div>
 
-        {!loading && !err && (
-          <>
-            {!current ? (
-              <div className="rounded-xl border border-slate-200 bg-white p-6">
-                <div className="text-slate-700">No cards yet.</div>
-                <div className="text-sm text-slate-500 mt-1">
-                  Try uploading CSV on the <a className="underline" href="/admin">Admin</a> page.
-                </div>
-              </div>
-            ) : (
-              <>
-                {/* Card */}
-                <div
-                  className={`card-surface relative preserve-3d`}
-                  style={{
-                    perspective: 1000,
-                  }}
-                >
-                  {/* shared base styles for both faces */}
-                  <div
-                    className={`absolute inset-0 rounded-2xl shadow bg-white border border-slate-200 p-6 transition-transform duration-300 backface-hidden`}
-                    style={{ transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)" }}
-                    onClick={flip}
-                    role="button"
-                    aria-label="flip card"
-                  >
-                    <div className="text-xs text-slate-500">{subtitle}</div>
-                    <div className="mt-2 text-2xl font-semibold text-slate-900 select-none">
-                      {current.term}
-                    </div>
-                    <div className="absolute bottom-4 left-0 right-0 text-center text-slate-400 text-sm">
-                      Click / Space to flip
-                    </div>
-                  </div>
+        <div className="mb-5 flex gap-2">
+          <button
+            type="button"
+            onClick={onPrevClick}
+            className="rounded-xl border px-4 py-2 text-sm hover:bg-zinc-50 active:scale-[0.99] transition"
+          >
+            Prev
+          </button>
+          <button
+            type="button"
+            onClick={onFlipClick}
+            className="rounded-xl border px-4 py-2 text-sm hover:bg-zinc-50 active:scale-[0.99] transition"
+          >
+            {showDef ? 'Show Term' : 'Show Definition'}
+          </button>
+          <button
+            type="button"
+            onClick={onNextClick}
+            className="rounded-xl border px-4 py-2 text-sm hover:bg-zinc-50 active:scale-[0.99] transition"
+          >
+            Next
+          </button>
+        </div>
 
-                  <div
-                    className={`absolute inset-0 rounded-2xl shadow bg-white border border-slate-200 p-6 transition-transform duration-300 backface-hidden rotate-y-180`}
-                    style={{ transform: flipped ? "rotateY(0deg)" : "rotateY(-180deg)" }}
-                    onClick={flip}
-                    role="button"
-                    aria-label="flip card"
-                  >
-                    <div className="text-xs text-slate-500">{subtitle}</div>
-                    <div className="mt-2 text-xl text-slate-800 leading-relaxed whitespace-pre-wrap select-none">
-                      {current.definition}
-                    </div>
-                    <div className="absolute bottom-4 left-0 right-0 text-center text-slate-400 text-sm">
-                      Click / Space to flip back
-                    </div>
-                  </div>
-                </div>
-
-                {/* Controls */}
-                <div className="mt-4 flex items-center gap-2">
-                  <button
-                    onClick={prevCard}
-                    className="rounded-lg border px-3 py-2 bg-white border-slate-200 hover:border-slate-300"
-                  >
-                    ← Prev
-                  </button>
-                  <button
-                    onClick={flip}
-                    className="rounded-lg border px-3 py-2 bg-white border-slate-200 hover:border-slate-300"
-                  >
-                    Flip
-                  </button>
-                  <button
-                    onClick={nextCard}
-                    className="rounded-lg border px-3 py-2 bg-white border-slate-200 hover:border-slate-300"
-                  >
-                    Next →
-                  </button>
-
-                  <div className="ml-auto text-sm text-slate-600">
-                    {idx + 1} / {count}
-                  </div>
-                </div>
-              </>
-            )}
-          </>
-        )}
+        {/* Clickable card (only this area flips) */}
+        <article
+          role="button"
+          tabIndex={0}
+          onClick={() => flip()}
+          onKeyDown={(e) => {
+            if (e.code === 'Space' || e.key === 'Enter') { e.preventDefault(); flip(); }
+          }}
+          aria-pressed={showDef}
+          className="cursor-pointer select-none rounded-2xl border bg-white p-6 shadow-sm transition-transform focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+        >
+          <h2 className="m-0 text-lg font-medium text-zinc-900">
+            {showDef ? (c.definition ?? <em>No definition</em>) : (c.term ?? '(no term)')}
+          </h2>
+          <p className="mt-2 text-zinc-600">
+            {showDef ? 'Definition' : 'Term'} • Click or press Space to flip
+          </p>
+        </article>
       </main>
     </>
   );

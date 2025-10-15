@@ -1,4 +1,3 @@
-// pages/index.tsx
 import Head from "next/head";
 import Link from "next/link";
 
@@ -6,44 +5,36 @@ export default function Home() {
   return (
     <>
       <Head>
-        <title>myABA Suite | Home</title>
+        <title>myABA Study Suite | Home</title>
       </Head>
 
-      <main className="page max-w-5xl">
-        <h1 className="text-3xl font-extrabold text-blue-900">Welcome to MyABA</h1>
-        <p className="mt-2 mb-6 text-gray-600">Choose a section to get started:</p>
+      <main className="mx-auto max-w-6xl px-4 py-10">
+        <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-blue-900">
+          Welcome to myABA Study Suite
+        </h1>
+        <p className="mt-2 mb-8 text-gray-600">
+          Choose a section to get started.
+        </p>
 
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <Link
-            href="/flashcards"
-            className="block rounded-2xl bg-white p-5 shadow transition hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-          >
-            <h2 className="text-lg font-bold text-blue-900">Flashcards</h2>
-            <p className="mt-1 text-sm text-gray-600">Flip terms &amp; definitions</p>
+          <Link href="/flashcards" className="rounded-2xl border p-4 hover:shadow">
+            <div className="text-lg font-medium">Flashcards</div>
+            <div className="text-sm text-gray-500">Study terms & definitions</div>
           </Link>
 
-          <Link
-            href="/quiz"
-            className="block rounded-2xl bg-white p-5 shadow transition hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-          >
-            <h2 className="text-lg font-bold text-blue-900">Quiz</h2>
-            <p className="mt-1 text-sm text-gray-600">Multiple choice with rationale</p>
+          <Link href="/safmeds" className="rounded-2xl border p-4 hover:shadow">
+            <div className="text-lg font-medium">SAFMEDS</div>
+            <div className="text-sm text-gray-500">Timed fluency practice</div>
           </Link>
 
-          <Link
-            href="/safmeds"
-            className="block rounded-2xl bg-white p-5 shadow transition hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-          >
-            <h2 className="text-lg font-bold text-blue-900">SAFMEDS</h2>
-            <p className="mt-1 text-sm text-gray-600">1-min timings &amp; graphs</p>
+          <Link href="/quiz" className="rounded-2xl border p-4 hover:shadow">
+            <div className="text-lg font-medium">Quiz</div>
+            <div className="text-sm text-gray-500">Scenario-based MCQs</div>
           </Link>
 
-          <Link
-            href="/admin"
-            className="block rounded-2xl bg-white p-5 shadow transition hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-          >
-            <h2 className="text-lg font-bold text-blue-900">Admin</h2>
-            <p className="mt-1 text-sm text-gray-600">Upload decks quickly</p>
+          <Link href="/admin" className="rounded-2xl border p-4 hover:shadow">
+            <div className="text-lg font-medium">Admin</div>
+            <div className="text-sm text-gray-500">Upload & manage decks</div>
           </Link>
         </div>
       </main>

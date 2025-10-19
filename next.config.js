@@ -1,7 +1,14 @@
-// next.config.js
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  reactStrictMode: true,
-  // Do NOT set output: 'export'
+  async redirects() {
+    return [
+      {
+        source: "/quiz/take/:id",
+        destination: "/quiz/sub/:id",
+        permanent: false,
+      },
+    ];
+  },
 };
+
 module.exports = nextConfig;

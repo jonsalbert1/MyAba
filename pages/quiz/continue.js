@@ -1,45 +1,51 @@
-// pages/api/quiz/continue.js
-import { createPagesServerClient } from "@supabase/auth-helpers-nextjs";
+// pages/quiz/continue.tsx
+import { useEffect } from "react";
+import { useRouter } from "next/router";
 
-const TABLE = process.env.QUIZ_TABLE_NAME || "quiz_questions";
-const PAGE = 10;
+/**
+ * Force SSR so Next.js doesn't try to prerender this page at build-time.
+ * That avoids the "rendered a Promise" error during prerender.
+ */
+export function getServerSideProps() {
+  return { props: {} };
+}
 
-export default async function handler(req, res) {
-  const supabase = createPagesServerClient({ req, res });
+export default function QuizContinue() {
+  const router = useRouter();
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return res.status(401).json({ ok: false, error: "Unauthorized" });
+  useEffect(() => {
+    // All async/side effects happen on the client
+    (async () => {
+      try {
+        // Prefer whatever you consider "last" (localStorage key written by runner)
+        const domainLetters = "ABCDEFGHI";
+        let target = "A1";
 
-  // Get all subdomains present in questions
-  const { data: subs } = await supabase
-    .from(TABLE)
-    .select("subdomain")
-    .is("is_active", true);
-  const allCodes = [...new Set((subs || []).map(r => r.subdomain))].sort();
+        for (const d of domainLetters) {
+          const last = localStorage.getItem(`quiz:lastCode:${d}`);
+          if (last) {
+            target = last;
+            break;
+          }
+        }
 
-  // For each code, figure out next batch and if it’s incomplete
-  for (const code of allCodes) {
-    // total Q
-    const { count: total } = await supabase
-      .from(TABLE).select("id", { count: "exact", head: true })
-      .eq("subdomain", code).is("is_active", true);
-    const totalCount = total ?? 0;
-    if (totalCount === 0) continue;
+        // Fallback: look for "A1" if nothing found
+        if (!target) target = "A1";
 
-    const totalBatches = Math.ceil(totalCount / PAGE);
+        // Redirect to the runner with that code
+        router.replace({ pathname: "/quiz/runner", query: { code: target } });
+      } catch {
+        // If anything goes wrong, just go to TOC
+        router.replace("/quiz");
+      }
+    })();
+  }, [router]);
 
-    // progress
-    const { data: prog } = await supabase
-      .from("quiz_progress")
-      .select("last_completed_batch")
-      .eq("user_id", user.id).eq("subdomain", code).maybeSingle();
-    const last = prog?.last_completed_batch ?? 0;
-    if (last < totalBatches) {
-      // Found the next subdomain that isn’t done
-      return res.status(200).json({ ok: true, code });
-    }
-  }
-
-  // Everything done (or no questions)
-  return res.status(200).json({ ok: true, code: null });
+  // Lightweight shell while redirecting
+  return (
+    <main className="mx-auto max-w-3xl px-4 py-8">
+      <h1 className="text-2xl font-semibold">Continuing your quiz…</h1>
+      <p className="text-gray-600">Finding your last subdomain and redirecting.</p>
+    </main>
+  );
 }

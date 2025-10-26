@@ -1,67 +1,76 @@
 // pages/api/quiz-toc.ts
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = (process.env.SUPABASE_URL || "").trim();
+const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
 const SUPABASE_SERVICE_ROLE_KEY = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { persistSession: false },
-});
+const supabase =
+  SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      })
+    : null;
 
 // Shape returned by the endpoint
-type TocResponse = {
-  ok: true;
-  domains: Array<{
-    domain: string;
-    subdomains: Array<{ subdomain: string; subdomain_text: string; item_count: number }>;
-  }>;
-} | {
-  ok: false;
-  error: string;
-};
+type TocResponse =
+  | {
+      ok: true;
+      domains: Array<{
+        domain: string;
+        subdomains: Array<{
+          subdomain: string;
+          subdomain_text: string;
+          item_count: number;
+        }>;
+      }>;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
 
-export default async function handler(req: any, res: any<TocResponse>) {
+export default async function handler(req: any, res: any) {
   try {
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    if (!supabase) {
       return res.status(500).json({
         ok: false,
         error: "Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY",
-      });
+      } as TocResponse);
     }
 
     // Optional filters
-    const onlyActive = (String(req.query.active ?? "1") === "1"); // default: only active
-    const domainFilter = String(req.query.domain || "").trim();   // e.g., "A: Behaviorism and Philosophical Foundations"
+    const onlyActive = String(req.query?.active ?? "1") === "1"; // default: only active
+    const domainFilter = String(req.query?.domain ?? "").trim(); // e.g., "A: Behaviorism…"
 
     // Build base query
     let query = supabase
       .from("quiz_questions")
       .select("domain, subdomain, subdomain_text, is_active", { count: "exact" });
 
-    if (onlyActive) {
-      query = query.eq("is_active", true);
-    }
-    if (domainFilter) {
-      query = query.eq("domain", domainFilter);
-    }
+    if (onlyActive) query = query.eq("is_active", true);
+    if (domainFilter) query = query.eq("domain", domainFilter);
 
     const { data, error } = await query;
+
     if (error) {
-      return res.status(500).json({ ok: false, error: error.message });
+      return res.status(500).json({ ok: false, error: error.message } as TocResponse);
     }
 
     // Group → { domain: { subdomain: { subdomain_text, count } } }
     const grouped: Record<string, Record<string, { subdomain_text: string; count: number }>> = {};
 
     for (const row of data || []) {
-      const d = (row.domain || "").toString();
-      const s = (row.subdomain || "").toString();
-      const t = (row.subdomain_text || "").toString();
+      const d = (row as any).domain?.toString() ?? "";
+      const s = (row as any).subdomain?.toString() ?? "";
+      const t = (row as any).subdomain_text?.toString() ?? "";
 
       if (!grouped[d]) grouped[d] = {};
       if (!grouped[d][s]) grouped[d][s] = { subdomain_text: t, count: 0 };
       grouped[d][s].count += 1;
-      // keep first non-empty subdomain_text if multiple rows differ
       if (!grouped[d][s].subdomain_text && t) grouped[d][s].subdomain_text = t;
     }
 
@@ -79,12 +88,8 @@ export default async function handler(req: any, res: any<TocResponse>) {
         return { domain, subdomains: subs };
       });
 
-    return res.status(200).json({ ok: true, domains });
+    return res.status(200).json({ ok: true, domains } as TocResponse);
   } catch (e: any) {
-    return res.status(500).json({ ok: false, error: e?.message || "Unknown error" });
+    return res.status(500).json({ ok: false, error: e?.message || "Unknown error" } as TocResponse);
   }
 }
-
-// AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
-
-

@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabaseClient";
 
 type Row = { code: string; title: string; lastScore?: number | null; starred?: boolean };
 
-const NAME: Record<string,string> = {
+const NAME: Record<string, string> = {
   A: "Behaviorism and Philosophical Foundations",
   B: "Concepts and Principles",
   C: "Measurement, Data Display, and Interpretation",
@@ -45,7 +45,7 @@ export default function SectionPage() {
       );
 
       // Optional fallback so A shows links even if DB empty
-      if (domain === "A" && codes.length === 0) codes = ["A1","A2","A3","A4","A5"];
+      if (domain === "A" && codes.length === 0) codes = ["A1", "A2", "A3", "A4", "A5"];
 
       const mapTitle = new Map<string, string>();
       (subs ?? []).forEach((r: any) => {
@@ -88,7 +88,7 @@ export default function SectionPage() {
       }
 
       setRows(
-        codes.map(code => ({
+        codes.map((code) => ({
           code,
           title: mapTitle.get(code) ?? "",
           lastScore: lastScore.get(code) ?? null,
@@ -114,14 +114,18 @@ export default function SectionPage() {
     return (
       <main className="mx-auto max-w-4xl px-6 py-10">
         <p className="text-gray-600">Unknown section.</p>
-        <Link href="/course" className="text-blue-700 underline">← Back to Course</Link>
+        <Link href="/course" className="text-blue-700 underline">
+          ← Back to Course
+        </Link>
       </main>
     );
   }
 
   return (
     <main className="mx-auto max-w-4xl px-6 py-10">
-      <Link href="/course" className="text-blue-700 hover:underline">← Course</Link>
+      <Link href="/course" className="text-blue-700 hover:underline">
+        ← Course
+      </Link>
 
       <h1 className="mt-3 text-3xl font-semibold">Section {domain}</h1>
       <p className="text-gray-600">{NAME[domain]}</p>
@@ -144,7 +148,9 @@ export default function SectionPage() {
               <div className="flex items-center gap-3">
                 <StarButton code={r.code} initial={r.starred ?? false} />
                 <ScoreBadge score={r.lastScore} />
-                <Link href={`/quiz/${r.code[0]}/${r.code}`} className="text-gray-400">›</Link>
+                <Link href={`/quiz/${r.code[0]}/${r.code}`} className="text-gray-400">
+                  ›
+                </Link>
               </div>
             </li>
           ))}
@@ -162,18 +168,37 @@ function ScoreBadge({ score }: { score: number | null | undefined }) {
 
 function StarButton({ code, initial }: { code: string; initial: boolean }) {
   const [on, setOn] = useState(initial);
+
   return (
     <button
       aria-label={on ? "Unstar" : "Star"}
       onClick={async () => {
-        setOn(v => !v);
-        // Prefer modern 'subdomain', fallback to legacy 'subdomain_code'
-        let res = await supabase.from("quiz_stars").upsert({ subdomain: code });
-        if (res.error) {
-          await supabase.from("quiz_stars").upsert({ subdomain_code: code });
+        const prev = on;
+        setOn((v) => !v);
+
+        try {
+          // TS bypass to avoid `never[]` inference on upsert
+          const { error } = await (supabase as any)
+            .from("quiz_stars")
+            .upsert({ subdomain: code } as any);
+
+          if (error) {
+            // legacy fallback if your table uses `subdomain_code`
+            const fallback = await (supabase as any)
+              .from("quiz_stars")
+              .upsert({ subdomain_code: code } as any);
+
+            if (fallback.error) throw fallback.error;
+          }
+        } catch (e) {
+          // rollback optimistic toggle on error
+          setOn(prev);
+          // optional: console.error("Failed to upsert quiz star", e);
         }
       }}
-      className={`w-7 h-7 rounded-full border flex items-center justify-center ${on ? "text-yellow-500 border-yellow-500" : "text-gray-400"}`}
+      className={`w-7 h-7 rounded-full border flex items-center justify-center ${
+        on ? "text-yellow-500 border-yellow-500" : "text-gray-400"
+      }`}
       title={on ? "Starred" : "Star"}
     >
       ★

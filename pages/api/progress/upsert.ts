@@ -1,40 +1,102 @@
 // pages/api/progress/upsert.ts
-import { createServerSupabaseClient } from "@supabase/auth-helpers-nextjs";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-export default async function handler(req: any, res: any) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+type StudyQuizState = {
+  user_id: string;
+  subdomain: string;              // e.g., "A1"
+  last_index?: number | null;
+  best_accuracy?: number | null;
+  done?: boolean | null;
+  updated_at?: string | null;
+};
 
-  const supabase = createServerSupabaseClient({ req, res });
-  const {
-    data: { user },
-    error: userErr,
-  } = await supabase.auth.getUser();
-
-  if (userErr) return res.status(500).json({ error: userErr.message });
-  if (!user) return res.status(401).json({ error: "Not authenticated" });
-
-  const { code, domain, done, best_accuracy } = req.body ?? {};
-  if (!code || !domain) return res.status(400).json({ error: "Missing code or domain" });
-
-  // Table: quiz_progress (see SQL below)
-  const { error: upsertErr } = await supabase
-    .from("quiz_progress")
-    .upsert(
-      {
-        user_id: user.id,
-        domain,
-        code,
-        done: !!done,
-        best_accuracy: typeof best_accuracy === "number" ? Math.max(0, Math.min(100, Math.round(best_accuracy))) : null,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "user_id,code" }
-    );
-
-  if (upsertErr) return res.status(500).json({ error: upsertErr.message });
-  return res.status(200).json({ ok: true });
+/** Minimal cookie serializer for Next.js Pages API (no extra deps) */
+function serializeCookie(
+  name: string,
+  value: string,
+  options: CookieOptions = {}
+): string {
+  const parts: string[] = [`${name}=${encodeURIComponent(value)}`];
+  if (options.domain) parts.push(`Domain=${options.domain}`);
+  parts.push(`Path=${options.path ?? "/"}`);
+  if (options.maxAge !== undefined) parts.push(`Max-Age=${Math.floor(options.maxAge)}`);
+  if (options.expires) parts.push(`Expires=${new Date(options.expires).toUTCString()}`);
+  if (options.httpOnly ?? true) parts.push("HttpOnly");
+  if (options.secure ?? true) parts.push("Secure");
+  const sameSite = options.sameSite ?? "lax";
+  if (sameSite) parts.push(`SameSite=${String(sameSite).charAt(0).toUpperCase()}${String(sameSite).slice(1)}`);
+  return parts.join("; ");
 }
 
-// AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
+/** Create a server client wired to Next.js Pages API req/res cookies */
+function getSupabaseFromReqRes(req: any, res: any) {
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL as string,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string,
+    {
+      cookies: {
+        get: (name: string) => req.cookies?.[name],
+        set: (name: string, value: string, options: CookieOptions) => {
+          const prev = res.getHeader("Set-Cookie");
+          const cookie = serializeCookie(name, value, options);
+          if (Array.isArray(prev)) res.setHeader("Set-Cookie", [...prev, cookie]);
+          else if (prev) res.setHeader("Set-Cookie", [prev as string, cookie]);
+          else res.setHeader("Set-Cookie", [cookie]);
+        },
+        remove: (name: string, options: CookieOptions) => {
+          const prev = res.getHeader("Set-Cookie");
+          const cookie = serializeCookie(name, "", { ...options, maxAge: 0 });
+          if (Array.isArray(prev)) res.setHeader("Set-Cookie", [...prev, cookie]);
+          else if (prev) res.setHeader("Set-Cookie", [prev as string, cookie]);
+          else res.setHeader("Set-Cookie", [cookie]);
+        },
+      },
+    }
+  );
+}
+
+export default async function handler(req: any, res: any) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", ["POST"]);
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
+
+  try {
+    // Auth via @supabase/ssr
+    const supabase = getSupabaseFromReqRes(req, res);
+    const {
+      data: { user },
+      error: userErr,
+    } = await supabase.auth.getUser();
+
+    if (userErr) return res.status(500).json({ ok: false, error: userErr.message });
+    if (!user) return res.status(401).json({ ok: false, error: "Not authenticated" });
+
+    // Body
+    const { code, last_index, best_accuracy, done } = req.body ?? {};
+    if (!code || typeof code !== "string") {
+      return res.status(400).json({ ok: false, error: "Missing 'code' (subdomain) in body" });
+    }
+
+    const row: StudyQuizState = {
+      user_id: user.id,
+      subdomain: code,
+      last_index: typeof last_index === "number" ? last_index : null,
+      best_accuracy:
+        typeof best_accuracy === "number" ? Math.max(0, Math.min(100, Math.round(best_accuracy))) : null,
+      done: typeof done === "boolean" ? done : null,
+      updated_at: new Date().toISOString(),
+    };
+
+// Upsert with service role (TS bypass to avoid `never[]` inference)
+const { error } = await (supabaseAdmin as any)
+  .from("study_quiz_state")
+  .upsert(row, { onConflict: "user_id,subdomain" });
 
 
+    return res.status(200).json({ ok: true });
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, error: e?.message || "Unexpected error" });
+  }
+}

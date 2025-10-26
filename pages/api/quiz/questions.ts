@@ -3,7 +3,8 @@
 // Schema-tolerant: select('*') then normalize (question/prompt, correct/correct_answer, etc.)
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import { supabaseAdmin as supabase } from "../_supabaseAdmin";
+import { supabaseAdmin as supabase } from "@/lib/supabaseAdmin";
+import { json } from "@/lib/api-helpers";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   res.setHeader("Content-Type", "application/json");

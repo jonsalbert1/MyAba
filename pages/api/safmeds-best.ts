@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { supabaseAdmin as supabase, json } from "./_supabaseAdmin";
+import { supabaseAdmin as supabase } from "@/lib/supabaseAdmin";
+import { json } from "@/lib/api-helpers";
 
 /**
  * GET /api/safmeds-best?deck=GLOBAL

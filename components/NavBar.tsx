@@ -1,16 +1,17 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { createClient, User } from "@supabase/supabase-js";
+import { createClient } from "@supabase/supabase-js";
+import type { User, Session, AuthChangeEvent } from "@supabase/supabase-js";
 
 // If you already have getSupabaseBrowser(), use that instead
-const supabase =
+const supabase: ReturnType<typeof createClient> | null =
   typeof window !== "undefined"
     ? createClient(
         process.env.NEXT_PUBLIC_SUPABASE_URL as string,
         process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string
       )
-    : (null as any);
+    : null;
 
 function NavLink({
   href,
@@ -44,23 +45,29 @@ export default function NavBar() {
     if (!supabase) return;
 
     let mounted = true;
-    (async () => {
-      const { data } = await supabase.auth.getSession();
-      if (mounted) setUser(data.session?.user ?? null);
-    })();
 
-    const { data: sub } =
-      supabase.auth.onAuthStateChange((_e, session) => {
+    // Initial session → user
+    supabase.auth.getSession().then(({ data }) => {
+      if (mounted) setUser(data.session?.user ?? null);
+    });
+
+    // Subscribe to auth changes (typed)
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(
+      (event: AuthChangeEvent, session: Session | null) => {
         setUser(session?.user ?? null);
-      });
+      }
+    );
 
     return () => {
       mounted = false;
-      sub.subscription?.unsubscribe?.();
+      subscription?.unsubscribe();
     };
   }, []);
 
   async function handleLogout() {
+    if (!supabase) return;
     await supabase.auth.signOut();
     router.push("/");
   }
@@ -75,7 +82,7 @@ export default function NavBar() {
             aria-label="Toggle menu"
             onClick={() => setOpen((s) => !s)}
           >
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" strokeWidth="2" />
             </svg>
           </button>

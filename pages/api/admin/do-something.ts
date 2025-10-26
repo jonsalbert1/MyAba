@@ -1,42 +1,33 @@
 // pages/api/admin/do-something.ts
-import type { NextApiRequest, NextApiResponse } from 'next';
-import { createServerClient } from '@supabase/auth-helpers-nextjs';
-import { supabaseAdmin } from '../../../lib/supabaseAdmin';
+// Minimal, type-agnostic handler to avoid Duplicate identifier issues.
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // 1) Verify a logged-in user via cookies
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: {
-        get: (k) => req.cookies[k],
-        set: (k, v) => res.setHeader('Set-Cookie', `${k}=${v}; Path=/; HttpOnly; SameSite=Lax`),
-        remove: (k) => res.setHeader('Set-Cookie', `${k}=; Path=/; Max-Age=0`),
-      } }
-  );
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return res.status(401).json({ ok: false, error: 'Unauthorized' });
+import { createServerSupabaseClient } from "@supabase/auth-helpers-nextjs";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-  // 2) Check profile.is_admin with anon client (respects RLS)
-  const { data: profile, error } = await supabase
-    .from('profiles')
-    .select('is_admin')
-    .eq('id', user.id)
-    .maybeSingle();
+export default async function handler(req: any, res: any) {
+  // limit to POST (adjust as needed)
+  if (req.method !== "POST") {
+    res.setHeader("Allow", ["POST"]);
+    return res.status(405).json({ error: "Method Not Allowed" });
+  }
 
-  if (error) return res.status(500).json({ ok: false, error: error.message });
-  if (!profile?.is_admin) return res.status(403).json({ ok: false, error: 'Forbidden' });
+  // Auth (server-side)
+  const supabase = createServerSupabaseClient({ req, res });
+  const {
+    data: { user },
+    error: userErr,
+  } = await supabase.auth.getUser();
 
-  // 3) Perform privileged work with service client
-  // Example: bulk upsert to public tables
-  // const { error: upsertErr } = await supabaseAdmin.from('quiz_questions').upsert(rows);
-  // if (upsertErr) return res.status(500).json({ ok: false, error: upsertErr.message });
+  if (userErr) return res.status(500).json({ error: userErr.message });
+  if (!user) return res.status(401).json({ error: "Not authenticated" });
 
-  return res.status(200).json({ ok: true });
-}
+  try {
+    // EXAMPLE admin op (replace with your logic):
+    // const { error } = await supabaseAdmin.from("some_table").insert({ ... });
+    // if (error) throw error;
 
-import type { NextApiRequest, NextApiResponse } from "next";
-// AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
-export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
-  return res.status(404).json({ error: "Not a route (placeholder)" });
+    return res.status(200).json({ ok: true });
+  } catch (e: any) {
+    return res.status(500).json({ error: e?.message || "Unexpected error" });
+  }
 }

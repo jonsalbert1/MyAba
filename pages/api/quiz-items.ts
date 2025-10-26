@@ -1,6 +1,4 @@
 // pages/api/quiz-items.ts
-import type { NextApiRequest, NextApiResponse } from "next";
-
 const url = (process.env.SUPABASE_URL || "").replace(/\/+$/, "");
 const anon = process.env.SUPABASE_ANON_KEY || ""; // use anon for SELECT
 
@@ -38,8 +36,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 }
 
-import type { NextApiRequest, NextApiResponse } from "next";
 // AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
 export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
   return res.status(404).json({ error: "Not a route (placeholder)" });
 }
+

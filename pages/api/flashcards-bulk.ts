@@ -1,6 +1,4 @@
 // pages/api/flashcards-bulk.ts
-import type { NextApiRequest, NextApiResponse } from "next";
-
 const baseUrl = (process.env.SUPABASE_URL || "").replace(/\/+$/, "");
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const GLOBAL_DECK = process.env.GLOBAL_DECK_ID || "GLOBAL";
@@ -178,8 +176,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 }
 
-import type { NextApiRequest, NextApiResponse } from "next";
 // AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
 export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
   return res.status(404).json({ error: "Not a route (placeholder)" });
 }
+

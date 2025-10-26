@@ -1,5 +1,4 @@
 // pages/api/quiz/answer.ts
-import type { NextApiRequest, NextApiResponse } from "next";
 import { createPagesServerClient } from "@supabase/auth-helpers-nextjs";
 
 
@@ -97,3 +96,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 export default async function handler(_req, res) {
   return res.status(404).json({ error: "Not a route (placeholder)" });
 }
+

@@ -1,6 +1,4 @@
 // pages/api/quiz-bulk.ts
-import type { NextApiRequest, NextApiResponse } from "next";
-
 /** Allow larger uploads (tweak if needed) */
 export const config = {
   api: {
@@ -178,8 +176,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 }
 
-import type { NextApiRequest, NextApiResponse } from "next";
 // AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
 export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
   return res.status(404).json({ error: "Not a route (placeholder)" });
 }
+

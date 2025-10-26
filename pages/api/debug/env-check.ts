@@ -11,3 +11,9 @@ export default function handler(_req: NextApiRequest, res: NextApiResponse) {
     url_prefix: url.slice(0, 12),
   });
 }
+
+import type { NextApiRequest, NextApiResponse } from "next";
+// AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
+export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
+  return res.status(404).json({ error: "Not a route (placeholder)" });
+}

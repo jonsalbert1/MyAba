@@ -1,36 +1,40 @@
-import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
+// pages/api/quiz/bulkUpsert.ts
+import type { NextApiRequest, NextApiResponse } from "next";
+import { supabaseAdmin as supabase } from "@/lib/supabaseAdmin";
 
-type QuizRow = {
-  domain?: string;
-  question: string;
-  a: string;
-  b: string;
-  c: string;
-  d: string;
-  answer: "A" | "B" | "C" | "D";
-  rationale?: string;
+type BulkUpsertBody = {
+  items: Array<Record<string, any>>;
+  onConflict?: string; // e.g., "id" or "code"
 };
 
-export async function POST(req: Request) {
-  try {
-    const { deckId = "default", records } = await req.json() as {
-      deckId?: string;
-      records: QuizRow[];
-    };
-
-    if (!Array.isArray(records) || records.length === 0) {
-      return NextResponse.json({ error: "records must be a non-empty array" }, { status: 400 });
-    }
-
-    const { error, count } = await supabaseAdmin
-      .from("quiz_items")
-      .insert(records.map((r) => ({ deck_id: deckId, ...r })), { count: "exact" });
-
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-    return NextResponse.json({ ok: true, count: count ?? records.length });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", ["POST"]);
+    return res.status(405).json({ error: "Method Not Allowed" });
   }
+
+  const body: BulkUpsertBody = req.body ?? {};
+  if (!body || !Array.isArray(body.items) || body.items.length === 0) {
+    return res.status(400).json({ error: "items[] required" });
+  }
+
+  const onConflict = body.onConflict ?? "id";
+  try {
+    const { error } = await supabase
+      .from("quiz_items") // <-- change to your table name if different
+      .upsert(body.items, { onConflict });
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+    return res.status(200).json({ ok: true, count: body.items.length });
+  } catch (e: any) {
+    return res.status(500).json({ error: e?.message || "Unexpected error" });
+  }
+}
+
+import type { NextApiRequest, NextApiResponse } from "next";
+// AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
+export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
+  return res.status(404).json({ error: "Not a route (placeholder)" });
 }

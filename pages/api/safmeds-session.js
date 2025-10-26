@@ -55,3 +55,8 @@ export default async function handler(req, res) {
   res.setHeader('Allow', 'GET, POST');
   res.status(405).end('Method Not Allowed');
 }
+
+// AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
+export default async function handler(_req, res) {
+  return res.status(404).json({ error: "Not a route (placeholder)" });
+}

@@ -4,7 +4,7 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin';
  * 🔐 Example: Secure server-side auth route
  * This checks for a valid user ID or returns an error.
  */
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: any, res: any) {
   try {
     // You can pass a user_id in query or from client session
     const userId = req.query.user_id as string;
@@ -35,7 +35,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 }
 
 // AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
-export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
-  return res.status(404).json({ error: "Not a route (placeholder)" });
-}
+
 

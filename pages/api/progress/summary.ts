@@ -1,6 +1,6 @@
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: any, res: any) {
   const supabase = createSupabaseServerClient(req, res);
 
   const { data: { user }, error: userErr } = await supabase.auth.getUser();
@@ -33,7 +33,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 }
 
 // AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
-export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
-  return res.status(404).json({ error: "Not a route (placeholder)" });
-}
+
 

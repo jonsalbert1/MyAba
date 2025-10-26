@@ -8,8 +8,8 @@ type Resp =
   | { ok: false; error: string };
 
 export default async function handler(
-  req: NextApiRequest,
-  res: NextApiResponse<Resp>
+  req: any,
+  res: any<Resp>
 ) {
   try {
     res.setHeader("Cache-Control", "no-store");
@@ -76,7 +76,5 @@ export default async function handler(
 }
 
 // AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
-export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
-  return res.status(404).json({ error: "Not a route (placeholder)" });
-}
+
 

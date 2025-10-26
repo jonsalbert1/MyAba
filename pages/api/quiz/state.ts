@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabaseClient";
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: any, res: any) {
   const code = String(req.query.code || "");
   if (!code) return res.status(400).json({ ok: false, error: "Missing code" });
 
@@ -43,8 +43,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 }
 
 // AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
-export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
-  return res.status(404).json({ error: "Not a route (placeholder)" });
-}
 
 

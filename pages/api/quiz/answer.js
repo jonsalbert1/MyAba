@@ -5,7 +5,7 @@ import { createPagesServerClient } from "@supabase/auth-helpers-nextjs";
 const TABLE = process.env.QUIZ_TABLE_NAME || "quiz_questions";
 const PAGE = 10;
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: any, res: any) {
   if (req.method !== "POST")
     return res.status(405).json({ ok: false, error: "Method not allowed" });
 
@@ -93,7 +93,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 }
 
 // AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
-export default async function handler(_req, res) {
-  return res.status(404).json({ error: "Not a route (placeholder)" });
-}
+
 

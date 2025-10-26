@@ -20,7 +20,7 @@ type TocResponse = {
   error: string;
 };
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse<TocResponse>) {
+export default async function handler(req: any, res: any<TocResponse>) {
   try {
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
       return res.status(500).json({
@@ -86,7 +86,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
 }
 
 // AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
-export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
-  return res.status(404).json({ error: "Not a route (placeholder)" });
-}
+
 

@@ -1,4 +1,6 @@
 // pages/api/quiz.ts
+export const config = { runtime: "nodejs" } as const;
+
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createClient } from "@supabase/supabase-js";
 
@@ -8,18 +10,15 @@ import { createClient } from "@supabase/supabase-js";
  */
 const TABLE = "quiz_questions";
 
-const SUPABASE_URL = (process.env.SUPABASE_URL || "").trim();
+// Accept either server or public URL envs
+const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
 const SUPABASE_SERVICE_ROLE_KEY = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { persistSession: false },
+  auth: { persistSession: false, autoRefreshToken: false },
 });
 
 /* -------------------- Utils -------------------- */
-
-function randId() {
-  return Math.random().toString(36).slice(2, 10);
-}
 
 function normalizeABCD(val?: string | number): "A" | "B" | "C" | "D" {
   const s = String(val ?? "").trim().toUpperCase();
@@ -35,13 +34,13 @@ function cleanText(s: unknown): string | null {
   if (s == null) return null;
   let t = String(s);
   t = t
-    .replace(/[\u2018\u2019]/g, "'")     // ‘ ’ -> '
-    .replace(/[\u201C\u201D]/g, '"')     // “ ” -> "
-    .replace(/[\u2013\u2014]/g, "-")     // – — -> -
-    .replace(/\u2026/g, "...")           // … -> ...
-    .replace(/\u00A0/g, " ")             // NBSP -> space
-    .replace(/[\u200B-\u200D\uFEFF]/g, "") // zero-width -> remove
-    .replace(/\uFFFD/g, "-")             // replacement char -> hyphen
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/\u00A0/g, " ")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\uFFFD/g, "-")
     .trim();
   return t;
 }
@@ -50,14 +49,14 @@ function cleanChoices<T extends Record<string, any>>(m: T): T {
   return Object.fromEntries(Object.entries(m).map(([k, v]) => [k, cleanText(v)])) as T;
 }
 
-// Pick best available prompt (always return non-empty string)
+// Pick best available prompt (not used in output, but for sanity)
 function pickStem(r: any): string {
   return (
     cleanText(r?.question) ||
     cleanText(r?.statement) ||
     cleanText(r?.prompt) ||
     cleanText(r?.subdomain_text) ||
-    "" // final fallback
+    ""
   )!;
 }
 
@@ -93,7 +92,7 @@ async function loadRowsForCode(code: string): Promise<{
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
-    // Debug header: always expose which table we use
+    // Debug header: expose which table we use
     res.setHeader("x-quiz-table", TABLE);
 
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -110,7 +109,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const debug = String(req.query.debug || "") === "1";
 
     if (debug && !code) {
-      // Lightweight probe to help with env/debug
       const probe = await supabase.from(TABLE).select("*").limit(1);
       return res.status(200).json({
         ok: true,
@@ -126,17 +124,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ ok: false, error: "Missing subdomain code" });
     }
 
-    // Optional target size from subdomains table (non-fatal)
+    // Determine count (optional subdomains table)
     let target = 10;
     try {
-      const { data: sub, error: subErr } = await supabase.from("subdomains").select("*").eq("code", code).single();
+      const { data: sub, error: subErr } = await supabase
+        .from("subdomains")
+        .select("*")
+        .eq("code", code)
+        .single();
       if (!subErr && sub && typeof sub.target_items === "number") target = sub.target_items;
     } catch {
-      // ignore; default to 10
+      /* ignore */
     }
     const take = Math.min(Math.max(1, limitParam || target), Math.max(1, target));
 
-    // Load rows with flexible matching
+    // Load rows
     const loaded = await loadRowsForCode(code);
     const rows = loaded.rows || [];
     if (!rows.length) {
@@ -145,11 +147,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         table: TABLE,
         usedColumn: loaded.usedColumn,
         loadInfo: loaded.loadInfo,
-        items: [],
+        data: [],
       });
     }
 
-    // Ensure the table has the expected columns (new schema)
+    // Ensure required columns exist
     const first = rows[0] || {};
     const required = ["question", "a", "b", "c", "d", "correct_answer"];
     const missing = required.filter((k) => !(k in first));
@@ -161,32 +163,46 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    // Map to runner shape with sanitization
-    const items = rows
+    // Map to flat fields the UI expects (sanitize text)
+    const data = rows
       .sort(() => Math.random() - 0.5)
       .slice(0, take)
-      .map((r: any) => ({
-        id: r.id ?? randId(),
-        stem: pickStem(r), // non-empty, sanitized
-        statement: cleanText(r.statement),
-        question: cleanText(r.question),
-        choices: cleanChoices({ A: r.a, B: r.b, C: r.c, D: r.d }),
-        correct_key: normalizeABCD(r.correct_answer),
-        rationale_correct: cleanText(r.rationale_correct),
-        rationale_distractors: cleanChoices({
-          A: r.rationale_a,
-          B: r.rationale_b,
-          C: r.rationale_c,
-          D: r.rationale_d,
-        }),
-      }));
+      .map((r: any) => {
+        const cleanedChoices = cleanChoices({ a: r.a, b: r.b, c: r.c, d: r.d });
+        const cleanedRationales = cleanChoices({
+          rationale_correct: r.rationale_correct,
+          rationale_a: r.rationale_a,
+          rationale_b: r.rationale_b,
+          rationale_c: r.rationale_c,
+          rationale_d: r.rationale_d,
+        });
 
+        return {
+          id: r.id ?? undefined,
+          domain: r.domain ?? null,
+          subdomain: r.subdomain ?? code,
+          subdomain_text: cleanText(r.subdomain_text),
+          statement: cleanText(r.statement),
+          question: cleanText(r.question) || pickStem(r), // always provide something
+          a: cleanedChoices.a,
+          b: cleanedChoices.b,
+          c: cleanedChoices.c,
+          d: cleanedChoices.d,
+          correct_answer: normalizeABCD(r.correct_answer),
+          ...cleanedRationales,
+          is_active: r.is_active ?? true,
+          created_at: r.created_at ?? null,
+        };
+      });
+
+    // Final response (flat fields, key is 'data')
+    res.setHeader("Cache-Control", "no-store");
     return res.status(200).json({
       ok: true,
       table: TABLE,
       usedColumn: loaded.usedColumn,
       loadInfo: loaded.loadInfo,
-      items,
+      data,
     });
   } catch (e: any) {
     return res.status(500).json({ ok: false, error: e?.message || "Unknown error" });

@@ -15,7 +15,7 @@ export default function TopNav() {
         <nav className="ml-4 flex gap-3 text-sm">
           <Link className={linkClass(is("/flashcards"))} href="/flashcards">Flashcards</Link>
           <Link className={linkClass(is("/safmeds"))} href="/safmeds">SAFMEDS</Link>
-          <Link className={linkClass(is("/quiz"))} href="/quiz">Quiz</Link>
+          <Link className={linkClass(is("/course"))} href="/course">Quiz</Link> {/* ✅ fixed */}
           <Link className={linkClass(is("/admin"))} href="/admin">Admin</Link>
         </nav>
         <div className="ml-auto h-8 w-8 rounded-full bg-slate-200" aria-hidden />

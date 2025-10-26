@@ -17,10 +17,18 @@ body { padding-bottom: env(safe-area-inset-bottom); }
 /* Prevent iOS input zoom */
 input, textarea, select { font-size: 16px; }
 
-/* Your existing base theme */
+/* Your base theme */
 body {
   @apply bg-gray-50 text-gray-900;
-  font-family: system-ui, sans-serif;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
+}
+
+/* Text selection + focus visibility */
+::selection { background: rgba(37, 99, 235, 0.18); }
+:focus-visible {
+  outline: 2px solid theme(colors.blue.500);
+  outline-offset: 2px;
+  border-radius: 8px;
 }
 
 /* ---------- Responsive helpers ---------- */
@@ -31,7 +39,7 @@ body {
 /* Improve tap targets on mobile */
 .touch-target { min-height: 44px; }
 
-/* A generic page container; optional helper */
+/* A generic page container */
 .page {
   max-width: 1000px;
   margin: clamp(16px, 4vw, 40px) auto;
@@ -56,6 +64,25 @@ body {
   }
 }
 
+/* ---------- Components (tiny, reusable) ---------- */
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm font-medium border border-gray-300 bg-white text-gray-900 shadow-sm hover:shadow transition;
+  }
+  .btn-primary {
+    @apply border-transparent bg-blue-600 text-white hover:bg-blue-700;
+  }
+  .nav-link {
+    @apply text-gray-700 hover:text-blue-700 transition;
+  }
+  .nav-link-active {
+    @apply text-white bg-blue-600 rounded-lg px-2 py-1;
+  }
+  .kbd {
+    @apply inline-block rounded-md border border-gray-300 bg-gray-50 px-1.5 py-0.5 text-xs font-mono text-gray-700;
+  }
+}
+
 /* ---------- Flip-card utilities (WebKit-safe) ---------- */
 @layer utilities {
   /* Make faces invisible when they rotate away (Safari needs the prefix) */
@@ -72,4 +99,12 @@ body {
 
   /* Optional: a convenient perspective utility if you don't want bracket syntax */
   .perspective-1200 { perspective: 1200px; }
+
+  /* Smooth shadow hover for cards */
+  .card-hover { @apply transition-shadow hover:shadow-lg; }
+}
+
+/* ---------- Light/Dark (optional) ---------- */
+@media (prefers-color-scheme: dark) {
+  .dark\:card { background: #0b1220; color: #e5e7eb; }
 }

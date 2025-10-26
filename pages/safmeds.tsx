@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+// pages/safmeds.tsx
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** ---- Types ---- */
+/* ===========================
+   Types
+=========================== */
 type Card = {
   id: string;
   term: string;
@@ -20,7 +23,6 @@ type Session = {
   notes?: string | null;
 };
 
-// Best-of-day view row (from v_safmeds_best_of_day) — used when API is available
 type DailyBestRow = {
   id: string;
   deck: string | null;
@@ -35,7 +37,9 @@ type DailyBestRow = {
 type ApiList<T> = { ok: boolean; data: T[]; error?: string };
 type ApiPost<T> = { ok: boolean; data?: T; error?: string };
 
-/** ---- Deck param ---- */
+/* ===========================
+   Helpers
+=========================== */
 function useDeckFromQuery(defaultDeck = "GLOBAL") {
   const [deck, setDeck] = useState(defaultDeck);
   useEffect(() => {
@@ -46,8 +50,45 @@ function useDeckFromQuery(defaultDeck = "GLOBAL") {
   return deck;
 }
 
-/** ---- Flip Card (fixed) ---- */
-// Proper 3D flip with preserve-3d + backface-visibility so the back face never renders black.
+function looksLikeHtml(s: unknown) {
+  return typeof s === "string" && /<\s*html[\s>]/i.test(s);
+}
+
+async function fetchSafmedsCards(deck: string): Promise<Card[]> {
+  const res = await fetch(`/api/flashcards?deck=${encodeURIComponent(deck)}`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Flashcards load failed (${res.status}). ${text.slice(0, 200)}`);
+  }
+  const data = await res.json(); // expect { ok, data }
+  if (!data?.ok || !Array.isArray(data?.data)) {
+    const raw = typeof data === "string" ? data : JSON.stringify(data);
+    throw new Error(`Malformed response from /api/flashcards: ${raw.slice(0, 200)}`);
+  }
+
+  // Strip accidental HTML payloads
+  return (data.data as Card[]).filter(
+    (c) => c && !looksLikeHtml(c.term) && !looksLikeHtml(c.definition ?? "")
+  );
+}
+
+async function loadCardsWithRetry(deck: string, retries = 2, delayMs = 400): Promise<Card[]> {
+  try {
+    return await fetchSafmedsCards(deck);
+  } catch (err) {
+    if (retries <= 0) throw err;
+    await new Promise((r) => setTimeout(r, delayMs));
+    return loadCardsWithRetry(deck, retries - 1, delayMs * 2);
+  }
+}
+
+/* ===========================
+   Flip Card
+=========================== */
 function SafmedsFlipCard({
   front,
   back,
@@ -77,12 +118,10 @@ function SafmedsFlipCard({
           aria-label="Flip card"
           title={flipped ? "Click to show term" : "Click to reveal definition"}
         >
-          {/* FRONT */}
           <div className="face front">
             {front}
             <p className="hint">Click / Space to reveal definition</p>
           </div>
-          {/* BACK */}
           <div className="face back">
             {back}
             <p className="hint">Click / Space to flip back</p>
@@ -97,7 +136,7 @@ function SafmedsFlipCard({
           width: 100%;
           height: 240px;
           border-radius: 12px;
-          border: 1px solid #e5e7eb;      /* zinc-200 */
+          border: 1px solid #e5e7eb;
           background: transparent;
           box-shadow: 0 1px 2px rgba(0,0,0,0.06);
           transform-style: preserve-3d;
@@ -106,7 +145,6 @@ function SafmedsFlipCard({
           outline: none;
         }
         .flip[data-flipped="true"] { transform: rotateY(180deg); }
-
         .face {
           position: absolute;
           inset: 0;
@@ -115,20 +153,13 @@ function SafmedsFlipCard({
           justify-content: center;
           padding: 16px;
           border-radius: 12px;
-          backface-visibility: hidden;     /* 💡 critical */
-          background: #ffffff;             /* 💡 explicit light background */
-          color: #0b1220;                  /* near zinc-900 */
+          backface-visibility: hidden;
+          background: #ffffff;
+          color: #0b1220;
         }
         .front { transform: rotateY(0deg); }
         .back  { transform: rotateY(180deg); }
-
-        .hint {
-          margin-top: auto;
-          font-size: 12px;
-          opacity: 0.6;
-        }
-
-        /* Optional dark mode hardening if you use .dark */
+        .hint { margin-top: auto; font-size: 12px; opacity: 0.6; }
         :global(.dark) .face { background: #18181b; color: #f4f4f5; }
         :global(.dark) .hint { color: #a1a1aa; }
       `}</style>
@@ -136,10 +167,13 @@ function SafmedsFlipCard({
   );
 }
 
+/* ===========================
+   Page Component
+=========================== */
 export default function SAFMEDS() {
   const deck = useDeckFromQuery("GLOBAL");
 
-  /** ---- Timer state ---- */
+  // Timer
   const [duration, setDuration] = useState<number>(60);
   const [remaining, setRemaining] = useState<number>(60);
   const [running, setRunning] = useState(false);
@@ -149,7 +183,7 @@ export default function SAFMEDS() {
   const tickRef = useRef<number | null>(null);
   const t0Ref = useRef<number | null>(null);
 
-  /** ---- Flashcards (deck) ---- */
+  // Cards
   const [cards, setCards] = useState<Card[]>([]);
   const [loadingCards, setLoadingCards] = useState(true);
   const [cardsErr, setCardsErr] = useState<string | null>(null);
@@ -158,44 +192,50 @@ export default function SAFMEDS() {
   const [idx, setIdx] = useState(0);
   const [flipped, setFlipped] = useState(false);
 
-  /** ---- History / sessions (raw) ---- */
+  // Sessions + best-of-day
   const [loadingSess, setLoadingSess] = useState(true);
   const [sessErr, setSessErr] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
-
-  /** ---- Daily best-of-day (Option 2 first; fallback to client) ---- */
   const [dailyBest, setDailyBest] = useState<DailyBestRow[]>([]);
   const [dailyBestErr, setDailyBestErr] = useState<string | null>(null);
   const [metric, setMetric] = useState<"net" | "correct">("net");
 
-  /** ---- Live counter refs for snapshot-safe saving ---- */
+  // Snapshot-safe refs
   const correctRef = useRef(0);
   const incorrectRef = useRef(0);
   useEffect(() => { correctRef.current = correct; }, [correct]);
   useEffect(() => { incorrectRef.current = incorrect; }, [incorrect]);
 
-  /** ---- Load flashcards for deck ---- */
+  /* Load flashcards safely */
   useEffect(() => {
+    let mounted = true;
     (async () => {
       try {
         setLoadingCards(true);
-        const r = await fetch(`/api/flashcards?deck=${encodeURIComponent(deck)}`);
-        const j: ApiList<Card> & { matched?: number } = await r.json();
-        if (!j.ok) throw new Error(j.error || "Failed to load cards");
-        const list = (j.data || []).filter(c => (c.term || "").trim().length > 0);
-        setCards(list);
+        setCardsErr(null);
+        const list = await loadCardsWithRetry(deck);
+        if (!mounted) return;
+        const filtered = list.filter((c) => (c.term || "").trim().length > 0);
+        setCards(filtered);
         setIdx(0);
         setFlipped(false);
-        setCardsErr(list.length ? null : "No cards found for this deck.");
+        if (filtered.length === 0) setCardsErr(`No cards found for deck "${deck}".`);
       } catch (e: any) {
-        setCardsErr(e.message || "Failed to load cards");
+        if (!mounted) return;
+        setCards([]);
+        setCardsErr(
+          (e?.message || "Failed to load cards").includes("502")
+            ? "Upstream is briefly unavailable (502). Please try again."
+            : e?.message || "Failed to load cards"
+        );
       } finally {
-        setLoadingCards(false);
+        if (mounted) setLoadingCards(false);
       }
     })();
+    return () => { mounted = false; };
   }, [deck]);
 
-  /** ---- Load sessions for deck (raw), used for fallback + raw log ---- */
+  /* Sessions list */
   async function loadSessions() {
     try {
       setLoadingSess(true);
@@ -212,21 +252,18 @@ export default function SAFMEDS() {
   }
   useEffect(() => { loadSessions(); }, [deck]);
 
-  /** ---- Try to load daily best from API (Option 2) with graceful fallback ---- */
+  /* Daily best: prefer API; fallback to client compute */
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setDailyBestErr(null);
       try {
-        // Preferred: dedicated endpoint hitting the DB view v_safmeds_best_of_day
-        // Expect shape: ApiList<DailyBestRow>
         const res = await fetch(`/api/safmeds-best?deck=${encodeURIComponent(deck)}`);
         if (!res.ok) throw new Error("daily-best endpoint not available");
         const payload: ApiList<DailyBestRow> = await res.json();
         if (!payload.ok) throw new Error(payload.error || "Failed to load daily best");
         if (!cancelled) setDailyBest(payload.data || []);
       } catch (_err) {
-        // Fallback: compute best-of-day client-side from raw sessions
         const computed = computeBestOfDayFromSessions(sessions);
         if (!cancelled) {
           setDailyBest(computed);
@@ -237,7 +274,6 @@ export default function SAFMEDS() {
     return () => { cancelled = true; };
   }, [deck, sessions]);
 
-  /** ---- Client-side fallback: compute best-of-day from raw sessions ---- */
   function computeBestOfDayFromSessions(rows: Session[]): DailyBestRow[] {
     const byDay = new Map<string, DailyBestRow>();
     const score = (s: Session) => ({
@@ -254,9 +290,9 @@ export default function SAFMEDS() {
     };
     for (const s of rows) {
       const dt = new Date(s.run_started_at);
-      const key = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+      const key = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`;
       const prev = byDay.get(key);
-      const best = prev ? better(prev as unknown as Session, s) : s;
+      const best = prev ? better(prev as any as Session, s) : s;
       byDay.set(key, {
         id: (best as any).id,
         deck: best.deck,
@@ -268,10 +304,10 @@ export default function SAFMEDS() {
         net_score: best.correct - best.incorrect,
       });
     }
-    return [...byDay.values()].sort((a,b) => a.local_day.localeCompare(b.local_day));
+    return [...byDay.values()].sort((a, b) => a.local_day.localeCompare(b.local_day));
   }
 
-  /** ---- Snapshot-safe save ---- */
+  /* Save run (snapshot) */
   async function saveSessionSnapshot(correctSnap: number, incorrectSnap: number, durationSnap: number) {
     const payload = {
       deck: deck || "GLOBAL",
@@ -299,7 +335,7 @@ export default function SAFMEDS() {
     return saveSessionSnapshot(correctRef.current, incorrectRef.current, duration);
   }
 
-  /** ---- Timer loop ---- */
+  /* Timer */
   useEffect(() => {
     if (!running) return;
     t0Ref.current = performance.now();
@@ -313,63 +349,19 @@ export default function SAFMEDS() {
         setRunning(false);
         if (tickRef.current) cancelAnimationFrame(tickRef.current);
         tickRef.current = null;
-        // autosave snapshot when time hits zero
         void saveSessionSnapshot(correctRef.current, incorrectRef.current, duration);
         return;
       }
       tickRef.current = requestAnimationFrame(loop);
     };
     tickRef.current = requestAnimationFrame(loop);
-    return () => { if (tickRef.current) cancelAnimationFrame(tickRef.current); tickRef.current = null; };
+    return () => {
+      if (tickRef.current) cancelAnimationFrame(tickRef.current);
+      tickRef.current = null;
+    };
   }, [running, duration]);
 
-  function resetCounters() {
-    setCorrect(0);
-    setIncorrect(0);
-    setRemaining(duration);
-    setFlipped(false);
-    setIdx(0);
-  }
-
-  function start() {
-    if (running) return;
-    setFlipped(false);
-    setIdx(0);
-    setRunning(true);
-  }
-
-  function stop() {
-    if (!running) return;
-    setRunning(false);
-    if (tickRef.current) cancelAnimationFrame(tickRef.current);
-    tickRef.current = null;
-    // manual stop also saves snapshot
-    void saveSessionSnapshot(correctRef.current, incorrectRef.current, duration);
-  }
-
-  /** ---- Mark & advance ---- */
-  function nextCard() {
-    if (order.length === 0) return;
-    setIdx(i => (i + 1) % order.length);
-    setFlipped(false);
-  }
-  function prevCard() {
-    if (order.length === 0) return;
-    setIdx(i => (i - 1 + order.length) % order.length);
-    setFlipped(false);
-  }
-  function markCorrect() {
-    if (!running) return;
-    setCorrect(x => x + 1);
-    nextCard();
-  }
-  function markIncorrect() {
-    if (!running) return;
-    setIncorrect(x => x + 1);
-    nextCard();
-  }
-
-  /** ---- Keyboard: while running, Space flips; C/I grade; Arrows move ---- */
+  /* Keyboard shortcuts */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
@@ -377,7 +369,7 @@ export default function SAFMEDS() {
         if (k === " ") { e.preventDefault(); start(); }
         return;
       }
-      if (k === " ") { e.preventDefault(); setFlipped(f => !f); }
+      if (k === " ") { e.preventDefault(); setFlipped((f) => !f); }
       else if (k === "c") { e.preventDefault(); markCorrect(); }
       else if (k === "i") { e.preventDefault(); markIncorrect(); }
       else if (e.key === "ArrowRight") { e.preventDefault(); nextCard(); }
@@ -388,14 +380,13 @@ export default function SAFMEDS() {
     return () => window.removeEventListener("keydown", onKey);
   }, [running, cards.length]);
 
+  /* Derived */
   const totalCards = correct + incorrect;
   const pct = totalCards > 0 ? Math.round((correct / totalCards) * 100) : 0;
 
-  /** ---- Study order (seeded shuffle) ---- */
   const order: Card[] = useMemo(() => {
     const arr = cards.slice();
     if (!shuffle) return arr;
-    // Seeded Fisher–Yates
     let s = seed >>> 0;
     const rnd = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 0xffffffff; };
     for (let i = arr.length - 1; i > 0; i--) {
@@ -405,13 +396,55 @@ export default function SAFMEDS() {
     return arr;
   }, [cards, shuffle, seed]);
 
-  const current = order[idx] as Card | undefined;
+  const current = order[idx];
 
-  /** ---- Best-of-day UI Series (respects toggle) ---- */
+  /* Actions */
+  function resetCounters() {
+    setCorrect(0);
+    setIncorrect(0);
+    setRemaining(duration);
+    setFlipped(false);
+    setIdx(0);
+  }
+  function start() {
+    if (running) return;
+    setFlipped(false);
+    setIdx(0);
+    setRunning(true);
+  }
+  function stop() {
+    if (!running) return;
+    setRunning(false);
+    if (tickRef.current) cancelAnimationFrame(tickRef.current);
+    tickRef.current = null;
+    void saveSessionSnapshot(correctRef.current, incorrectRef.current, duration);
+  }
+  function nextCard() {
+    if (!order.length) return;
+    setIdx((i) => (i + 1) % order.length);
+    setFlipped(false);
+  }
+  function prevCard() {
+    if (!order.length) return;
+    setIdx((i) => (i - 1 + order.length) % order.length);
+    setFlipped(false);
+  }
+  function markCorrect() {
+    if (!running) return;
+    setCorrect((x) => x + 1);
+    nextCard();
+  }
+  function markIncorrect() {
+    if (!running) return;
+    setIncorrect((x) => x + 1);
+    nextCard();
+  }
+
+  /* Chart data */
   type ChartPoint = { day: string; y: number; correct: number; incorrect: number; net: number };
   const chartData: ChartPoint[] = useMemo(() => {
     return (dailyBest || []).map((r) => ({
-      day: r.local_day || r.run_started_at?.slice(0,10),
+      day: r.local_day || r.run_started_at?.slice(0, 10),
       y: metric === "net" ? r.net_score : r.correct,
       correct: r.correct,
       incorrect: r.incorrect,
@@ -419,18 +452,15 @@ export default function SAFMEDS() {
     }));
   }, [dailyBest, metric]);
 
-  /** ---- Simple SVG line chart (best-of-day only) ---- */
   function LineChart({ data, height = 180 }: { data: ChartPoint[]; height?: number }) {
     const padding = 28;
     const width = Math.max(320, data.length * 48 + padding * 2);
-
     const ys = data.map((d) => d.y);
     const maxY = Math.max(10, ...ys);
     const xScale = (i: number) =>
       padding + (data.length <= 1 ? (width - padding * 2) / 2 : (i * (width - padding * 2)) / (data.length - 1));
     const yScale = (v: number) =>
       height - padding - ((v - 0) / (maxY - 0)) * (height - padding * 2);
-
     const path = data.map((d, i) => `${i === 0 ? "M" : "L"} ${xScale(i)} ${yScale(d.y)}`).join(" ");
 
     return (
@@ -443,14 +473,14 @@ export default function SAFMEDS() {
             const y = yScale(v);
             return (
               <g key={i}>
-                <line x1={28 - 4} y1={y} x2={width - 28} y2={y} stroke="#f1f5f9" />
+                <line x1={24} y1={y} x2={width - 28} y2={y} stroke="#f1f5f9" />
                 <text x={6} y={y + 4} fontSize={10} fill="#64748b">{v}</text>
               </g>
             );
           })}
           {data.map((d, i) => (
-            <text key={d.day} x={xScale(i)} y={height - 28 + 14} fontSize={10} fill="#64748b" textAnchor="middle">
-              {d.day.slice(5)}
+            <text key={d.day} x={xScale(i)} y={height - 14} fontSize={10} fill="#64748b" textAnchor="middle">
+              {d.day?.slice(5)}
             </text>
           ))}
           <path d={path} fill="none" stroke="#0ea5e9" strokeWidth={2} />
@@ -462,12 +492,12 @@ export default function SAFMEDS() {
     );
   }
 
-  /** ---- Styles ---- */
+  /* UI styles (inline minimal) */
   const btn = { padding: "8px 12px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff" } as const;
   const btnPrimary = { padding: "8px 12px", borderRadius: 8, border: "1px solid #0ea5e9", background: "#0ea5e9", color: "#fff" } as const;
   const pill = { fontSize: 11, padding: "2px 8px", background: "#f1f5f9", border: "1px solid #e2e8f0", borderRadius: 999 } as const;
 
-  /** ---- UI ---- */
+  /* Render */
   return (
     <div style={{ maxWidth: 960, margin: "40px auto", padding: 16, fontFamily: "system-ui, -apple-system, Segoe UI" }}>
       <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 16 }}>
@@ -492,7 +522,6 @@ export default function SAFMEDS() {
 
       {/* Timer + card + grading */}
       <section style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 16, background: "#fff", marginBottom: 16 }}>
-        {/* Top controls */}
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <label>Duration:</label>
           <select
@@ -533,17 +562,18 @@ export default function SAFMEDS() {
           ) : cardsErr ? (
             <p style={{ color: "#b91c1c" }}>{cardsErr}</p>
           ) : order.length === 0 ? (
-            <p style={{ opacity: 0.7 }}>No cards in <b>{deck}</b>. Add some in <a href="/admin">/admin</a>.</p>
+            <p style={{ opacity: 0.7 }}>
+              No cards in <b>{deck}</b>. Add some in <a href="/admin">/admin</a>.
+            </p>
           ) : (
             <>
               <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>
                 Card {cards.length ? idx + 1 : 0} of {cards.length}
               </div>
 
-              {/* Proper flip card */}
               <SafmedsFlipCard
                 flipped={flipped}
-                onToggle={() => setFlipped(f => !f)}
+                onToggle={() => setFlipped((f) => !f)}
                 front={
                   <>
                     <strong style={{ fontSize: 18, lineHeight: 1.25, wordBreak: "break-word" }}>
@@ -551,7 +581,7 @@ export default function SAFMEDS() {
                     </strong>
                     <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <span style={pill}>{current?.deck || "GLOBAL"}</span>
-                      {current?.domain && (<span style={pill}>{current.domain}</span>)}
+                      {current?.domain && <span style={pill}>{current.domain}</span>}
                     </div>
                   </>
                 }
@@ -562,7 +592,7 @@ export default function SAFMEDS() {
                 }
               />
 
-              {/* Grading buttons */}
+              {/* Grading */}
               <div style={{ display: "flex", gap: 12, marginTop: 12, alignItems: "center" }}>
                 <button onClick={prevCard} disabled={!cards.length || !running} style={btn}>← Prev</button>
                 <button
@@ -596,7 +626,7 @@ export default function SAFMEDS() {
           )}
         </div>
 
-        {/* Notes + save/reset */}
+        {/* Notes + actions */}
         <div style={{ marginTop: 12 }}>
           <input
             value={notes}
@@ -621,7 +651,6 @@ export default function SAFMEDS() {
             <h2 style={{ margin: 0 }}>Daily runs</h2>
             <div style={{ fontSize: 12, opacity: 0.75 }}>Best of day (America/Los_Angeles). Deck: <b>{deck}</b></div>
           </div>
-          {/* Metric toggle */}
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <label style={{ fontSize: 12, opacity: 0.8 }}>Metric:</label>
             <button
@@ -635,9 +664,7 @@ export default function SAFMEDS() {
           </div>
         </div>
 
-        {dailyBestErr && (
-          <p style={{ color: "#b91c1c" }}>{dailyBestErr}</p>
-        )}
+        {dailyBestErr && <p style={{ color: "#b91c1c" }}>{dailyBestErr}</p>}
 
         {loadingSess ? (
           <p style={{ opacity: 0.7 }}>Loading…</p>
@@ -650,7 +677,6 @@ export default function SAFMEDS() {
               {metric === "net" ? "Net score (correct − incorrect)" : "Correct count"} — one point per day.
             </div>
 
-            {/* Best-of-day table */}
             <div style={{ marginTop: 12, border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden", background: "#fff" }}>
               <table className="min-w-full" style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
                 <thead style={{ background: "#f8fafc" }}>
@@ -715,3 +741,4 @@ export default function SAFMEDS() {
     </div>
   );
 }
+

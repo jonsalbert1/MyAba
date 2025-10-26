@@ -1,10 +1,8 @@
-// pages/quiz/index.tsx
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/router";
 
-/** Domain labels (BCBA 6th Edition) */
-const DOMAINS: Record<string, string> = {
+// Keep it plain (no TS Record<> annotations)
+const DOMAINS = {
   A: "Behaviorism and Philosophical Foundations",
   B: "Concepts and Principles",
   C: "Measurement, Data Display, and Interpretation",
@@ -16,15 +14,14 @@ const DOMAINS: Record<string, string> = {
   I: "Personnel Supervision and Management",
 };
 
-/** Subdomain counts (6th ed) — per Jon's spec */
 const SUBCOUNTS: Record<string, number> = {
   A: 5, B: 24, C: 12, D: 9, E: 12, F: 8, G: 19, H: 8, I: 7,
 };
 
 type DomainStat = {
-  completed: number;          // # subdomains with done-flag = "1"
-  accuracyPercent: number;    // placeholder until wired to Supabase
-  lastCode: string;           // e.g., "B7"
+  completed: number;
+  accuracyPercent: number;
+  lastCode: string;
 };
 
 type StatsMap = Record<string, DomainStat>;
@@ -47,9 +44,8 @@ function isSubdomainDone(domain: string, code: string): boolean {
   }
 }
 
-/** Load stats from localStorage; completed count is derived from done flags */
 function loadStatsFromStorage(): StatsMap {
-  const entries: [string, DomainStat][] = Object.keys(DOMAINS).map((d) => {
+  const entries = Object.keys(DOMAINS).map((d) => {
     const lastCode =
       localStorage.getItem(`quiz:lastCode:${d}`) || defaultDomainStat(d).lastCode;
 
@@ -64,58 +60,17 @@ function loadStatsFromStorage(): StatsMap {
       ? Number(accuracyStr)
       : 0;
 
-    return [d, { completed, accuracyPercent, lastCode }];
+    return [d, { completed, accuracyPercent, lastCode }] as const;
   });
 
-  return Object.fromEntries(entries);
+  return Object.fromEntries(entries) as StatsMap;
 }
 
-/* ---------- DEV: Diagnostics panel (remove when done) ---------- */
-function DevProgressInspector() {
-  const [dump, setDump] = useState<Array<[string, string]>>([]);
-
-  useEffect(() => {
-    try {
-      const keys: Array<[string, string]> = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i)!;
-        if (k.startsWith("quiz:")) {
-          keys.push([k, localStorage.getItem(k) ?? ""]);
-        }
-      }
-      keys.sort((a, b) => a[0].localeCompare(b[0]));
-      setDump(keys);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  return (
-    <details className="mb-6 rounded-lg border bg-yellow-50 p-3 text-xs">
-      <summary className="cursor-pointer font-semibold">
-        DEV: Local progress snapshot (click to expand)
-      </summary>
-      <div className="mt-2 space-y-1">
-        {dump.length === 0 ? (
-          <div className="text-gray-600">No quiz:* keys found in localStorage.</div>
-        ) : (
-          dump.map(([k, v]) => (
-            <div key={k} className="font-mono break-all">
-              <span className="text-gray-500">{k}</span>: <span>{v}</span>
-            </div>
-          ))
-        )}
-      </div>
-    </details>
-  );
-}
-/* ---------- /DEV panel ---------- */
-
-export default function QuizDashboardTOC() {
-  const router = useRouter();
+export default function QuizDashboard() {
   const [stats, setStats] = useState<StatsMap>({});
   const [doneMap, setDoneMap] = useState<Record<string, Record<string, boolean>>>({});
 
+  // Initial load (localStorage)
   useEffect(() => {
     try {
       const s = loadStatsFromStorage();
@@ -134,12 +89,18 @@ export default function QuizDashboardTOC() {
     }
   }, []);
 
+  // React to local changes
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (!e.key) return;
-      if (e.key.startsWith("quiz:done:") || e.key.startsWith("quiz:lastCode:") || e.key.startsWith("quiz:accuracy:")) {
+      if (
+        e.key.startsWith("quiz:done:") ||
+        e.key.startsWith("quiz:lastCode:") ||
+        e.key.startsWith("quiz:accuracy:")
+      ) {
         const s = loadStatsFromStorage();
         setStats(s);
+
         const map: Record<string, Record<string, boolean>> = {};
         for (const d of Object.keys(DOMAINS)) {
           map[d] = {};
@@ -162,6 +123,7 @@ export default function QuizDashboardTOC() {
       }
       setDoneMap(map);
     };
+
     window.addEventListener("storage", onStorage);
     window.addEventListener("quiz-progress-updated", onLocal as EventListener);
     return () => {
@@ -178,17 +140,12 @@ export default function QuizDashboardTOC() {
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-8">
-      <header className="mb-4">
-        <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">
-          Quiz Dashboard
-        </h1>
+      <header className="mb-8">
+        <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">Quiz Dashboard</h1>
         <p className="mt-2 text-sm text-gray-600">
           Track your progress by domain, jump back to where you left off, or browse all subdomains.
         </p>
       </header>
-
-      {/* DEV panel (safe to remove later) */}
-      <DevProgressInspector />
 
       <section className="mb-8 grid gap-3 sm:grid-cols-3">
         <Link href="/quiz/run?mode=all" className="block rounded-2xl border p-4 shadow-sm hover:shadow transition">
@@ -205,7 +162,6 @@ export default function QuizDashboardTOC() {
         </Link>
       </section>
 
-      {/* Legend */}
       <div className="mb-4 flex flex-wrap gap-3 text-xs text-gray-500">
         <span className="inline-flex items-center gap-2 rounded-md border px-2 py-1">
           <span className="inline-block h-3 w-3 rounded-sm bg-black" />
@@ -217,12 +173,12 @@ export default function QuizDashboardTOC() {
         </span>
       </div>
 
-      {/* Domain cards with progress + Continue link */}
       <section className="mb-12 grid gap-4 md:grid-cols-2">
         {Object.entries(DOMAINS).map(([domain, label]) => {
           const s = stats[domain] ?? defaultDomainStat(domain);
           const total = totals[domain] || 0;
-          const pctComplete = total > 0 ? Math.min(100, Math.round((s.completed / total) * 100)) : 0;
+          const pctComplete =
+            total > 0 ? Math.min(100, Math.round((s.completed / total) * 100)) : 0;
 
           return (
             <article key={domain} className="rounded-2xl border p-5 shadow-sm hover:shadow transition">
@@ -234,16 +190,11 @@ export default function QuizDashboardTOC() {
                   </p>
                 </div>
 
-                {/* Continue now points to the runner */}
-                <Link
-                  href={`/quiz/runner?code=${s.lastCode}`}
-                  className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-                >
+                <Link href={`/quiz/runner?code=${s.lastCode}`} className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50">
                   Continue: {s.lastCode}
                 </Link>
               </div>
 
-              {/* Progress bar */}
               <div className="mt-4 h-2 w-full rounded-full bg-gray-200">
                 <div
                   className="h-2 rounded-full bg-gray-800"
@@ -252,11 +203,8 @@ export default function QuizDashboardTOC() {
                 />
               </div>
 
-              {/* Inline TOC (highlight + checkmarks) */}
               <details className="mt-4">
-                <summary className="cursor-pointer select-none text-sm font-medium">
-                  View subdomains
-                </summary>
+                <summary className="cursor-pointer select-none text-sm font-medium">View subdomains</summary>
                 <ul className="mt-3 grid grid-cols-2 gap-2 text-sm md:grid-cols-3">
                   {makeSubdomains(domain).map((code) => {
                     const isCurrent = code === s.lastCode;
@@ -286,7 +234,6 @@ export default function QuizDashboardTOC() {
         })}
       </section>
 
-      {/* Full TOC (highlight + checkmarks) */}
       <section className="mb-16">
         <h3 className="text-2xl font-semibold mb-4">All Subdomains (TOC)</h3>
         <div className="space-y-6">
@@ -324,14 +271,6 @@ export default function QuizDashboardTOC() {
             );
           })}
         </div>
-      </section>
-
-      <section className="text-xs text-gray-500">
-        <p>
-          Completion flags are stored per subdomain in <code>localStorage</code> as{" "}
-          <code>quiz:done:&lt;domain&gt;:&lt;code&gt; = "1"</code>. Progress is computed from those
-          flags. Accuracy is still a placeholder until wired to Supabase.
-        </p>
       </section>
     </main>
   );

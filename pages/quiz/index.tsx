@@ -1,338 +1,190 @@
-// pages/quiz/index.tsx
-import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/router";
+import { useEffect, useMemo, useState } from "react";
 
-/** Domain labels (BCBA 6th Edition) */
-const DOMAINS: Record<string, string> = {
-  A: "Behaviorism and Philosophical Foundations",
-  B: "Concepts and Principles",
-  C: "Measurement, Data Display, and Interpretation",
-  D: "Experimental Design",
-  E: "Ethical and Professional Issues",
-  F: "Behavior Assessment",
-  G: "Behavior-Change Procedures",
-  H: "Selecting and Implementing Interventions",
-  I: "Personnel Supervision and Management",
-};
+/** How many subdomains per domain letter */
+const COUNTS: Record<string, number> = { A:5,B:24,C:12,D:9,E:12,F:8,G:19,H:8,I:7 };
 
-/** Subdomain counts (6th ed) — per Jon's spec */
-const SUBCOUNTS: Record<string, number> = {
-  A: 5, B: 24, C: 12, D: 9, E: 12, F: 8, G: 19, H: 8, I: 7,
-};
-
-type DomainStat = {
-  completed: number;          // # subdomains with done-flag = "1"
-  accuracyPercent: number;    // placeholder until wired to Supabase
-  lastCode: string;           // e.g., "B7"
-};
-
-type StatsMap = Record<string, DomainStat>;
-
-function makeSubdomains(domain: string): string[] {
-  const total = SUBCOUNTS[domain] ?? 0;
-  return Array.from({ length: total }, (_, i) => `${domain}${i + 1}`);
+function getAllDomainLetters() {
+  return Object.keys(COUNTS);
 }
 
-function defaultDomainStat(domain: string): DomainStat {
-  const first = `${domain}1`;
-  return { completed: 0, accuracyPercent: 0, lastCode: first };
+function readLocal(key: string) {
+  try { return localStorage.getItem(key); } catch { return null; }
 }
 
-function isSubdomainDone(domain: string, code: string): boolean {
-  try {
-    return localStorage.getItem(`quiz:done:${domain}:${code}`) === "1";
-  } catch {
-    return false;
-  }
-}
-
-/** Load stats from localStorage; completed count is derived from done flags */
-function loadStatsFromStorage(): StatsMap {
-  const entries: [string, DomainStat][] = Object.keys(DOMAINS).map((d) => {
-    const lastCode =
-      localStorage.getItem(`quiz:lastCode:${d}`) || defaultDomainStat(d).lastCode;
-
-    const codes = makeSubdomains(d);
-    const completed = codes.reduce(
-      (acc, code) => acc + (isSubdomainDone(d, code) ? 1 : 0),
-      0
-    );
-
-    const accuracyStr = localStorage.getItem(`quiz:accuracy:${d}`);
-    const accuracyPercent = Number.isFinite(Number(accuracyStr))
-      ? Number(accuracyStr)
-      : 0;
-
-    return [d, { completed, accuracyPercent, lastCode }];
-  });
-
-  return Object.fromEntries(entries);
-}
-
-/* ---------- DEV: Diagnostics panel (remove when done) ---------- */
-function DevProgressInspector() {
-  const [dump, setDump] = useState<Array<[string, string]>>([]);
+function DomainRow({ letter }: { letter: string }) {
+  const [doneMap, setDoneMap] = useState<Record<string, boolean>>({});
+  const [lastCode, setLastCode] = useState<string | null>(null);
+  const [round, setRound] = useState<number>(0);
 
   useEffect(() => {
     try {
-      const keys: Array<[string, string]> = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i)!;
-        if (k.startsWith("quiz:")) {
-          keys.push([k, localStorage.getItem(k) ?? ""]);
-        }
+      const r = Number(readLocal(`quiz:round:${letter}`) || 0);
+      setRound(Number.isFinite(r) ? r : 0);
+      setLastCode(readLocal(`quiz:lastCode:${letter}`) || null);
+
+      const max = COUNTS[letter] ?? 0;
+      const m: Record<string, boolean> = {};
+      for (let i = 1; i <= max; i++) {
+        const code = `${letter}${i}`;
+        m[code] = readLocal(`quiz:done:${letter}:${code}`) === "1";
       }
-      keys.sort((a, b) => a[0].localeCompare(b[0]));
-      setDump(keys);
-    } catch {
-      // ignore
-    }
-  }, []);
+      setDoneMap(m);
+    } catch {/* ignore */}
+  }, [letter]);
+
+  const firstCode = `${letter}1`;
+  const resumeCode = lastCode && /^[A-I]\d+$/i.test(lastCode) ? lastCode : firstCode;
+  const completedCount = Object.values(doneMap).filter(Boolean).length;
 
   return (
-    <details className="mb-6 rounded-lg border bg-yellow-50 p-3 text-xs">
-      <summary className="cursor-pointer font-semibold">
-        DEV: Local progress snapshot (click to expand)
-      </summary>
-      <div className="mt-2 space-y-1">
-        {dump.length === 0 ? (
-          <div className="text-gray-600">No quiz:* keys found in localStorage.</div>
-        ) : (
-          dump.map(([k, v]) => (
-            <div key={k} className="font-mono break-all">
-              <span className="text-gray-500">{k}</span>: <span>{v}</span>
-            </div>
-          ))
-        )}
+    <li className="rounded-lg border p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-lg font-semibold">Domain {letter}</div>
+          <div className="text-xs text-gray-500">
+            This round: {completedCount}/{COUNTS[letter]} completed • Round #{round}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Link
+            href={{ pathname: "/quiz/runner", query: { code: resumeCode } }}
+            className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50"
+            title="Resume exactly where you left off in this domain"
+          >
+            Resume ({resumeCode})
+          </Link>
+          <Link
+            href={{ pathname: "/quiz/runner", query: { code: firstCode } }}
+            className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50"
+            title="Start over at the first subdomain"
+          >
+            Start at {firstCode}
+          </Link>
+          <button
+            className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50"
+            title="Clear local progress for this domain and bump round"
+            onClick={() => {
+              const raw = Number(readLocal(`quiz:round:${letter}`) || 0);
+              const nextRound = (Number.isFinite(raw) ? raw : 0) + 1;
+              localStorage.setItem(`quiz:round:${letter}`, String(nextRound));
+
+              const max = COUNTS[letter] ?? 0;
+              for (let i = 1; i <= max; i++) {
+                const code = `${letter}${i}`;
+                localStorage.removeItem(`quiz:done:${letter}:${code}`);
+                localStorage.removeItem(`quiz:accuracy:${letter}:${code}`);
+              }
+              localStorage.removeItem(`quiz:lastCode:${letter}`);
+              location.reload();
+            }}
+          >
+            Reset round
+          </button>
+        </div>
       </div>
-    </details>
+
+      {/* Single-column checklist for subdomains */}
+      <ul className="mt-3 space-y-1 text-sm">
+        {Array.from({ length: COUNTS[letter] }, (_, i) => `${letter}${i + 1}`).map((code) => (
+          <li key={code} className="flex items-center gap-2">
+            <span
+              className={
+                "inline-flex h-4 w-4 items-center justify-center rounded-sm border text-[10px] " +
+                (doneMap[code] ? "bg-green-500 text-white border-green-500" : "bg-white text-transparent")
+              }
+              aria-label={doneMap[code] ? "Completed" : "Not completed"}
+              title={doneMap[code] ? "Completed" : "Not completed"}
+            >
+              ✓
+            </span>
+            <span className="w-12">{code}</span>
+            <Link
+              href={{ pathname: "/quiz/runner", query: { code } }}
+              className="underline underline-offset-2 hover:opacity-80"
+              title={`Open ${code}`}
+            >
+              Open
+            </Link>
+            <span className="ml-2 text-xs text-gray-500">
+              {doneMap[code] ? "Completed" : "—"}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </li>
   );
 }
-/* ---------- /DEV panel ---------- */
 
-export default function QuizDashboardTOC() {
-  const router = useRouter();
-  const [stats, setStats] = useState<StatsMap>({});
-  const [doneMap, setDoneMap] = useState<Record<string, Record<string, boolean>>>({});
-
+/** Picks a reasonable global "continue" target by scanning lastCode for each domain. */
+function useGlobalResume() {
+  const [resume, setResume] = useState<{ letter: string; code: string } | null>(null);
   useEffect(() => {
     try {
-      const s = loadStatsFromStorage();
-      setStats(s);
-
-      const map: Record<string, Record<string, boolean>> = {};
-      for (const d of Object.keys(DOMAINS)) {
-        map[d] = {};
-        for (const code of makeSubdomains(d)) {
-          map[d][code] = isSubdomainDone(d, code);
-        }
-      }
-      setDoneMap(map);
-    } catch {
-      // noop
-    }
+      const letters = getAllDomainLetters();
+      // Prefer most recent domain that actually has a lastCode; otherwise A1
+      const found = letters
+        .map((L) => ({ L, last: readLocal(`quiz:lastCode:${L}`) }))
+        .find((x) => x.last && /^[A-I]\d+$/i.test(x.last));
+      if (found?.last) setResume({ letter: found.L, code: found.last });
+      else setResume({ letter: "A", code: "A1" });
+    } catch {/* ignore */}
   }, []);
+  return resume;
+}
 
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (!e.key) return;
-      if (e.key.startsWith("quiz:done:") || e.key.startsWith("quiz:lastCode:") || e.key.startsWith("quiz:accuracy:")) {
-        const s = loadStatsFromStorage();
-        setStats(s);
-        const map: Record<string, Record<string, boolean>> = {};
-        for (const d of Object.keys(DOMAINS)) {
-          map[d] = {};
-          for (const code of makeSubdomains(d)) {
-            map[d][code] = isSubdomainDone(d, code);
-          }
-        }
-        setDoneMap(map);
-      }
-    };
-    const onLocal = () => {
-      const s = loadStatsFromStorage();
-      setStats(s);
-      const map: Record<string, Record<string, boolean>> = {};
-      for (const d of Object.keys(DOMAINS)) {
-        map[d] = {};
-        for (const code of makeSubdomains(d)) {
-          map[d][code] = isSubdomainDone(d, code);
-        }
-      }
-      setDoneMap(map);
-    };
-    window.addEventListener("storage", onStorage);
-    window.addEventListener("quiz-progress-updated", onLocal as EventListener);
-    return () => {
-      window.removeEventListener("storage", onStorage);
-      window.removeEventListener("quiz-progress-updated", onLocal as EventListener);
-    };
-  }, []);
-
-  const totals = useMemo(() => {
-    const t: Record<string, number> = {};
-    for (const d of Object.keys(DOMAINS)) t[d] = SUBCOUNTS[d] ?? 0;
-    return t;
-  }, []);
+export default function QuizHub() {
+  const letters = useMemo(() => getAllDomainLetters(), []);
+  const resume = useGlobalResume();
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-8">
-      <header className="mb-4">
-        <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">
-          Quiz Dashboard
-        </h1>
-        <p className="mt-2 text-sm text-gray-600">
-          Track your progress by domain, jump back to where you left off, or browse all subdomains.
-        </p>
+    <main className="mx-auto max-w-3xl px-4 py-8">
+      <header className="mb-6 flex items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">Quiz Hub</h1>
+          <p className="text-sm text-gray-600">
+            One page to resume, start fresh, or browse all subdomains.
+          </p>
+        </div>
+        <nav className="flex gap-2">
+          <Link
+            href={resume ? { pathname: "/quiz/runner", query: { code: resume.code } } : "/quiz/runner?code=A1"}
+            className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50"
+            title="Continue where you left off"
+          >
+            Continue {resume ? `(${resume.code})` : "(A1)"}
+          </Link>
+          <Link
+            href="/"
+            className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50"
+            title="Back to Home"
+          >
+            Home
+          </Link>
+        </nav>
       </header>
 
-      {/* DEV panel (safe to remove later) */}
-      <DevProgressInspector />
-
-      <section className="mb-8 grid gap-3 sm:grid-cols-3">
-        <Link href="/quiz/run?mode=all" className="block rounded-2xl border p-4 shadow-sm hover:shadow transition">
-          <div className="text-lg font-medium">Entire Set of Quizzes</div>
-          <p className="text-sm text-gray-600">Run across all domains.</p>
+      <section className="mb-6 grid gap-3 sm:grid-cols-3">
+        <Link href={{ pathname: "/quiz/runner", query: { code: "A1" } }} className="rounded-lg border p-4 hover:bg-gray-50">
+          <div className="text-lg font-semibold">Start at A1</div>
+          <div className="text-sm text-gray-600">Begin the A domain from the first subdomain.</div>
         </Link>
-        <Link href="/quiz/run?mode=random" className="block rounded-2xl border p-4 shadow-sm hover:shadow transition">
-          <div className="text-lg font-medium">Random Quiz</div>
-          <p className="text-sm text-gray-600">Mix it up—randomized items.</p>
+        <Link href={{ pathname: "/quiz/runner", query: { code: "B1" } }} className="rounded-lg border p-4 hover:bg-gray-50">
+          <div className="text-lg font-semibold">Jump to B1</div>
+          <div className="text-sm text-gray-600">Quick link to the next domain.</div>
         </Link>
-        <Link href="/quiz/run?mode=missed" className="block rounded-2xl border p-4 shadow-sm hover:shadow transition">
-          <div className="text-lg font-medium">Missed Questions</div>
-          <p className="text-sm text-gray-600">Review items you missed.</p>
+        <Link href="/quiz/runner?code=I1" className="rounded-lg border p-4 hover:bg-gray-50">
+          <div className="text-lg font-semibold">Explore I1</div>
+          <div className="text-sm text-gray-600">Try a different domain segment.</div>
         </Link>
       </section>
 
-      {/* Legend */}
-      <div className="mb-4 flex flex-wrap gap-3 text-xs text-gray-500">
-        <span className="inline-flex items-center gap-2 rounded-md border px-2 py-1">
-          <span className="inline-block h-3 w-3 rounded-sm bg-black" />
-          <span>Current subdomain</span>
-        </span>
-        <span className="inline-flex items-center gap-1 rounded-md border px-2 py-1">
-          <span aria-hidden>✅</span>
-          <span>Completed</span>
-        </span>
-      </div>
-
-      {/* Domain cards with progress + Continue link */}
-      <section className="mb-12 grid gap-4 md:grid-cols-2">
-        {Object.entries(DOMAINS).map(([domain, label]) => {
-          const s = stats[domain] ?? defaultDomainStat(domain);
-          const total = totals[domain] || 0;
-          const pctComplete = total > 0 ? Math.min(100, Math.round((s.completed / total) * 100)) : 0;
-
-          return (
-            <article key={domain} className="rounded-2xl border p-5 shadow-sm hover:shadow transition">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-xl font-semibold">{domain}. {label}</h2>
-                  <p className="text-sm text-gray-600">
-                    {s.completed}/{total} subdomains completed · Accuracy {s.accuracyPercent}%
-                  </p>
-                </div>
-
-                {/* Continue now points to the runner */}
-                <Link
-                  href={`/quiz/runner?code=${s.lastCode}`}
-                  className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-                >
-                  Continue: {s.lastCode}
-                </Link>
-              </div>
-
-              {/* Progress bar */}
-              <div className="mt-4 h-2 w-full rounded-full bg-gray-200">
-                <div
-                  className="h-2 rounded-full bg-gray-800"
-                  style={{ width: `${pctComplete}%` }}
-                  aria-label={`Progress ${pctComplete}%`}
-                />
-              </div>
-
-              {/* Inline TOC (highlight + checkmarks) */}
-              <details className="mt-4">
-                <summary className="cursor-pointer select-none text-sm font-medium">
-                  View subdomains
-                </summary>
-                <ul className="mt-3 grid grid-cols-2 gap-2 text-sm md:grid-cols-3">
-                  {makeSubdomains(domain).map((code) => {
-                    const isCurrent = code === s.lastCode;
-                    const isDone = doneMap[domain]?.[code] ?? false;
-                    return (
-                      <li key={code}>
-                        <Link
-                          href={`/quiz/runner?code=${code}`}
-                          className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 transition ${
-                            isCurrent
-                              ? "bg-black text-white border-black font-medium shadow-sm"
-                              : "hover:bg-gray-50"
-                          }`}
-                          title={isDone ? "Completed" : "Not completed"}
-                        >
-                          {isCurrent && <span>📍</span>}
-                          <span>{code}</span>
-                          {isDone && <span aria-hidden>✅</span>}
-                        </Link>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </details>
-            </article>
-          );
-        })}
-      </section>
-
-      {/* Full TOC (highlight + checkmarks) */}
-      <section className="mb-16">
-        <h3 className="text-2xl font-semibold mb-4">All Subdomains (TOC)</h3>
-        <div className="space-y-6">
-          {Object.entries(DOMAINS).map(([domain, label]) => {
-            const s = stats[domain] ?? defaultDomainStat(domain);
-            return (
-              <div key={domain} className="rounded-2xl border p-4">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-lg font-medium">{domain}. {label}</span>
-                  <span className="text-xs text-gray-500">Last visited: {s.lastCode}</span>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {makeSubdomains(domain).map((code) => {
-                    const isCurrent = code === s.lastCode;
-                    const isDone = doneMap[domain]?.[code] ?? false;
-                    return (
-                      <Link
-                        key={code}
-                        href={`/quiz/runner?code=${code}`}
-                        className={`rounded-lg border px-2 py-1 text-sm transition inline-flex items-center gap-1 ${
-                          isCurrent
-                            ? "bg-black text-white border-black font-medium shadow-sm"
-                            : "hover:bg-gray-50"
-                        }`}
-                        title={isDone ? "Completed" : "Not completed"}
-                      >
-                        {isCurrent && <span>📍</span>}
-                        <span>{code}</span>
-                        {isDone && <span aria-hidden>✅</span>}
-                      </Link>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="text-xs text-gray-500">
-        <p>
-          Completion flags are stored per subdomain in <code>localStorage</code> as{" "}
-          <code>quiz:done:&lt;domain&gt;:&lt;code&gt; = "1"</code>. Progress is computed from those
-          flags. Accuracy is still a placeholder until wired to Supabase.
-        </p>
-      </section>
+      {/* Single-column list of domains with subdomain checklist */}
+      <ol className="space-y-4">
+        {letters.map((L) => (
+          <DomainRow key={L} letter={L} />
+        ))}
+      </ol>
     </main>
   );
 }

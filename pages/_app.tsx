@@ -10,7 +10,7 @@ import dynamic from "next/dynamic";
 import "@/styles/globals.css";
 
 const UserMenu = dynamic(() => import("@/components/UserMenu"), { ssr: false });
-// 🔸 Preview ribbon only renders in the browser (no SSR)
+// Preview ribbon only renders in the browser (no SSR)
 const EnvRibbon = dynamic(() => import("@/components/EnvRibbon"), { ssr: false });
 
 /** Active link helper: uses .nav-link / .nav-link-active from globals.css */
@@ -62,6 +62,16 @@ export default function App({
     };
   }, [router.events]);
 
+  // After magic-link redirect, strip ?code & ?state to avoid PKCE/SSR noise
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("code") || url.searchParams.has("state")) {
+      url.searchParams.delete("code");
+      url.searchParams.delete("state");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, []);
+
   const links = [
     { href: "/", label: "Home" },
     { href: "/flashcards", label: "Flashcards" },
@@ -73,9 +83,10 @@ export default function App({
   return (
     <SessionContextProvider
       supabaseClient={supabase}
+      // We’re not doing SSR auth right now; pass null to avoid PKCE helpers.
       initialSession={pageProps.initialSession ?? null}
     >
-      {/* 🔸 Shows 'Preview' on Vercel preview deployments */}
+      {/* Shows 'Preview' on Vercel preview deployments */}
       <EnvRibbon />
 
       <header className="sticky top-0 z-40 border-b bg-white/80 backdrop-blur">

@@ -1,102 +1,162 @@
 // pages/api/progress/upsert.ts
+import type { NextApiRequest, NextApiResponse } from "next";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-type StudyQuizState = {
-  user_id: string;
-  subdomain: string;              // e.g., "A1"
-  last_index?: number | null;
-  best_accuracy?: number | null;
-  done?: boolean | null;
-  updated_at?: string | null;
+/** Ensure Node runtime (Pages API) */
+export const config = {
+  api: { bodyParser: true }, // allow JSON bodies
 };
 
-/** Minimal cookie serializer for Next.js Pages API (no extra deps) */
-function serializeCookie(
-  name: string,
-  value: string,
-  options: CookieOptions = {}
-): string {
-  const parts: string[] = [`${name}=${encodeURIComponent(value)}`];
-  if (options.domain) parts.push(`Domain=${options.domain}`);
-  parts.push(`Path=${options.path ?? "/"}`);
-  if (options.maxAge !== undefined) parts.push(`Max-Age=${Math.floor(options.maxAge)}`);
-  if (options.expires) parts.push(`Expires=${new Date(options.expires).toUTCString()}`);
-  if (options.httpOnly ?? true) parts.push("HttpOnly");
-  if (options.secure ?? true) parts.push("Secure");
-  const sameSite = options.sameSite ?? "lax";
-  if (sameSite) parts.push(`SameSite=${String(sameSite).charAt(0).toUpperCase()}${String(sameSite).slice(1)}`);
-  return parts.join("; ");
-}
-
-/** Create a server client wired to Next.js Pages API req/res cookies */
-function getSupabaseFromReqRes(req: any, res: any) {
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL as string,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string,
-    {
-      cookies: {
-        get: (name: string) => req.cookies?.[name],
-        set: (name: string, value: string, options: CookieOptions) => {
-          const prev = res.getHeader("Set-Cookie");
-          const cookie = serializeCookie(name, value, options);
-          if (Array.isArray(prev)) res.setHeader("Set-Cookie", [...prev, cookie]);
-          else if (prev) res.setHeader("Set-Cookie", [prev as string, cookie]);
-          else res.setHeader("Set-Cookie", [cookie]);
-        },
-        remove: (name: string, options: CookieOptions) => {
-          const prev = res.getHeader("Set-Cookie");
-          const cookie = serializeCookie(name, "", { ...options, maxAge: 0 });
-          if (Array.isArray(prev)) res.setHeader("Set-Cookie", [...prev, cookie]);
-          else if (prev) res.setHeader("Set-Cookie", [prev as string, cookie]);
-          else res.setHeader("Set-Cookie", [cookie]);
-        },
-      },
-    }
+function setCookies(res: NextApiResponse, cookies: { name: string; value: string; options: CookieOptions }[]) {
+  res.setHeader(
+    "Set-Cookie",
+    cookies.map(({ name, value, options }) => {
+      const parts: string[] = [`${name}=${encodeURIComponent(value)}`];
+      parts.push(`Path=${options.path ?? "/"}`);
+      if (options.expires) parts.push(`Expires=${new Date(options.expires).toUTCString()}`);
+      if (options.domain) parts.push(`Domain=${options.domain}`);
+      if (options.maxAge !== undefined) parts.push(`Max-Age=${Math.floor(options.maxAge)}`);
+      if (options.sameSite) parts.push(`SameSite=${options.sameSite}`);
+      if (options.httpOnly) parts.push("HttpOnly");
+      if (options.secure) parts.push("Secure");
+      return parts.join("; ");
+    })
   );
 }
 
-export default async function handler(req: any, res: any) {
-  if (req.method !== "POST") {
-    res.setHeader("Allow", ["POST"]);
-    return res.status(405).json({ ok: false, error: "Method not allowed" });
-  }
-
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
-    // Auth via @supabase/ssr
-    const supabase = getSupabaseFromReqRes(req, res);
-    const {
-      data: { user },
-      error: userErr,
-    } = await supabase.auth.getUser();
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST" });
 
-    if (userErr) return res.status(500).json({ ok: false, error: userErr.message });
-    if (!user) return res.status(401).json({ ok: false, error: "Not authenticated" });
+    const debug = String(req.query.debug ?? "") === "1";
 
-    // Body
-    const { code, last_index, best_accuracy, done } = req.body ?? {};
-    if (!code || typeof code !== "string") {
-      return res.status(400).json({ ok: false, error: "Missing 'code' (subdomain) in body" });
+    // --- 1) Resolve user (Bearer first, then cookies)
+    let userId: string | null = null;
+    let authMode: "bearer" | "cookie" | "none" = "none";
+
+    const rawAuth = req.headers.authorization ?? "";
+    const token = rawAuth.startsWith("Bearer ") ? rawAuth.slice("Bearer ".length).trim() : null;
+
+    if (token) {
+      const { data, error } = await supabaseAdmin.auth.getUser(token);
+      if (!error && data?.user?.id) {
+        userId = data.user.id;
+        authMode = "bearer";
+      }
     }
 
-    const row: StudyQuizState = {
-      user_id: user.id,
-      subdomain: code,
-      last_index: typeof last_index === "number" ? last_index : null,
+    if (!userId) {
+      const supabase = createServerClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        {
+          cookies: {
+            getAll: () => {
+              const cookie = req.headers.cookie ?? "";
+              if (!cookie) return [];
+              return cookie.split(";").map((c) => {
+                const [n, ...v] = c.trim().split("=");
+                return { name: n, value: v.join("=") };
+              });
+            },
+            setAll: (cookies) => setCookies(res, cookies as any),
+          },
+        }
+      );
+      const { data } = await supabase.auth.getUser();
+      if (data?.user?.id) {
+        userId = data.user.id;
+        authMode = "cookie";
+      }
+    }
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, error: "Auth session missing!", details: { authMode } });
+    }
+
+    // --- 2) Parse & validate body
+    type Body = {
+      subdomain: string;
+      last_index?: number | string | null;
+      best_accuracy?: number | string | null;
+      done?: boolean | null;
+    };
+    const body = (req.body || {}) as Body;
+
+    const subdomainRaw = (body.subdomain ?? "").toString().trim();
+    if (!subdomainRaw) {
+      return res.status(400).json({ ok: false, error: "Missing subdomain", details: { body } });
+    }
+
+    const payload = {
+      user_id: userId,
+      subdomain: subdomainRaw.toUpperCase(),
+      last_index:
+        body.last_index === null || body.last_index === undefined
+          ? null
+          : Number.isFinite(Number(body.last_index))
+          ? Number(body.last_index)
+          : null,
       best_accuracy:
-        typeof best_accuracy === "number" ? Math.max(0, Math.min(100, Math.round(best_accuracy))) : null,
-      done: typeof done === "boolean" ? done : null,
+        body.best_accuracy === null || body.best_accuracy === undefined
+          ? null
+          : Number.isFinite(Number(body.best_accuracy))
+          ? Number(body.best_accuracy)
+          : null,
+      done: typeof body.done === "boolean" ? body.done : null,
       updated_at: new Date().toISOString(),
     };
 
-// Upsert with service role (TS bypass to avoid `never[]` inference)
-const { error } = await (supabaseAdmin as any)
-  .from("study_quiz_state")
-  .upsert(row, { onConflict: "user_id,subdomain" });
+    // --- 3) Probe: ensure admin client OK (table exists + service role)
+    const probe = await supabaseAdmin.from("study_quiz_state").select("user_id").limit(1);
+    if (probe.error) {
+      return res.status(500).json({
+        ok: false,
+        error: "Admin probe failed (check SUPABASE_SERVICE_ROLE_KEY / table / RLS).",
+        details: { probe: probe.error.message },
+        hint:
+          "Confirm SUPABASE_SERVICE_ROLE_KEY is set (not anon), table 'study_quiz_state' exists, and RLS won't block service role.",
+      });
+    }
 
+    // --- 4) Upsert (requires UNIQUE (user_id, subdomain))
+    const upsert = supabaseAdmin
+      .from("study_quiz_state")
+      .upsert(payload, { onConflict: "user_id,subdomain" })
+      .select()
+      .single(); // return the row so you can see it
 
-    return res.status(200).json({ ok: true });
+    const { data: row, error } = await upsert;
+
+    if (error) {
+      const msg = error.message || "";
+      const needsUnique =
+        /no unique|constraint.*on conflict|does not match any|unique or exclusion/i.test(msg);
+      const rlsHit =
+        /violates row-level security|RLS|permission denied|not allowed/i.test(msg);
+      const missingRel = /relation .* does not exist/i.test(msg);
+
+      return res.status(500).json({
+        ok: false,
+        error: msg,
+        details: { authMode, payload },
+        hint: needsUnique
+          ? 'Add UNIQUE: ALTER TABLE "study_quiz_state" ADD CONSTRAINT "study_quiz_state_user_subdomain_unique" UNIQUE ("user_id","subdomain");'
+          : rlsHit
+          ? "RLS blocked write. Ensure supabaseAdmin uses the SERVICE ROLE key or relax RLS."
+          : missingRel
+          ? "Create the table (see migration snippet)."
+          : undefined,
+      });
+    }
+
+    if (debug) {
+      return res.status(200).json({ ok: true, debug: { authMode, userId, payload }, row });
+    }
+
+    return res.status(200).json({ ok: true, row });
   } catch (e: any) {
-    return res.status(500).json({ ok: false, error: e?.message || "Unexpected error" });
+    return res.status(500).json({ ok: false, error: e?.message ?? "Unexpected error" });
   }
 }

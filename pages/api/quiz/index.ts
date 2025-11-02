@@ -10,5 +10,3 @@ export default async function handler(req: any, res: any) {
 }
 
 // AUTO-ADDED PLACEHOLDER by fix script — replace with real handler when ready.
-
-

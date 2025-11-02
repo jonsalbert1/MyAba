@@ -40,13 +40,14 @@ type ApiPost<T> = { ok: boolean; data?: T; error?: string };
 /* ===========================
    Helpers
 =========================== */
-function useDeckFromQuery(defaultDeck = "GLOBAL") {
+function useDeckFromQuery(defaultDeck = "") {
+  // default "" = ALL decks (no filter)
   const [deck, setDeck] = useState(defaultDeck);
   useEffect(() => {
     if (typeof window === "undefined") return;
     const d = new URLSearchParams(window.location.search).get("deck");
     setDeck(d && d.trim() ? d.trim() : defaultDeck);
-  }, []);
+  }, [defaultDeck]);
   return deck;
 }
 
@@ -54,31 +55,28 @@ function looksLikeHtml(s: unknown) {
   return typeof s === "string" && /<\s*html[\s>]/i.test(s);
 }
 
-async function fetchSafmedsCards(deck: string): Promise<Card[]> {
-  const res = await fetch(`/api/flashcards?deck=${encodeURIComponent(deck)}`, {
-    method: "GET",
-    headers: { Accept: "application/json" },
-  });
+// ✅ Fetch cards from the unified /api/flashcards (same as Flashcards page)
+async function fetchFlashcards(params: { deck?: string; limit?: number; offset?: number }) {
+  const p = new URLSearchParams();
+  if (params.deck && params.deck.trim()) p.set("deck", params.deck.trim());
+  p.set("limit", String(params.limit ?? 2000));
+  if (params.offset) p.set("offset", String(params.offset));
 
+  const res = await fetch(`/api/flashcards?${p.toString()}`, { cache: "no-store" });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Flashcards load failed (${res.status}). ${text.slice(0, 200)}`);
   }
-  const data = await res.json(); // expect { ok, data }
-  if (!data?.ok || !Array.isArray(data?.data)) {
-    const raw = typeof data === "string" ? data : JSON.stringify(data);
-    throw new Error(`Malformed response from /api/flashcards: ${raw.slice(0, 200)}`);
+  const json = await res.json();
+  if (!json?.ok || !Array.isArray(json?.cards)) {
+    throw new Error(`Malformed response from /api/flashcards: ${JSON.stringify(json).slice(0, 200)}`);
   }
-
-  // Strip accidental HTML payloads
-  return (data.data as Card[]).filter(
-    (c) => c && !looksLikeHtml(c.term) && !looksLikeHtml(c.definition ?? "")
-  );
+  return json.cards as Card[];
 }
 
-async function loadCardsWithRetry(deck: string, retries = 2, delayMs = 400): Promise<Card[]> {
+async function loadCardsWithRetry(deck: string, retries = 1, delayMs = 300): Promise<Card[]> {
   try {
-    return await fetchSafmedsCards(deck);
+    return await fetchFlashcards({ deck, limit: 2000 });
   } catch (err) {
     if (retries <= 0) throw err;
     await new Promise((r) => setTimeout(r, delayMs));
@@ -171,7 +169,9 @@ function SafmedsFlipCard({
    Page Component
 =========================== */
 export default function SAFMEDS() {
-  const deck = useDeckFromQuery("GLOBAL");
+  // Default to ALL decks (""), so you see everything immediately like Flashcards.
+  // If you want just Global (and NULL), set the default to "Global".
+  const deck = useDeckFromQuery("");
 
   // Timer
   const [duration, setDuration] = useState<number>(60);
@@ -206,28 +206,29 @@ export default function SAFMEDS() {
   useEffect(() => { correctRef.current = correct; }, [correct]);
   useEffect(() => { incorrectRef.current = incorrect; }, [incorrect]);
 
-  /* Load flashcards safely */
+  /* Load flashcards via API (same source/logic as Flashcards page) */
   useEffect(() => {
     let mounted = true;
     (async () => {
       try {
         setLoadingCards(true);
         setCardsErr(null);
+
         const list = await loadCardsWithRetry(deck);
         if (!mounted) return;
-        const filtered = list.filter((c) => (c.term || "").trim().length > 0);
+
+        const filtered = list
+          .filter((c) => (c?.term || "").trim().length > 0)              // non-empty term
+          .filter((c) => !looksLikeHtml(c.term) && !looksLikeHtml(c.definition ?? "")); // strip accidental HTML payloads
+
         setCards(filtered);
         setIdx(0);
         setFlipped(false);
-        if (filtered.length === 0) setCardsErr(`No cards found for deck "${deck}".`);
+        if (filtered.length === 0) setCardsErr(`No cards found${deck ? ` for deck "${deck}"` : ""}.`);
       } catch (e: any) {
         if (!mounted) return;
         setCards([]);
-        setCardsErr(
-          (e?.message || "Failed to load cards").includes("502")
-            ? "Upstream is briefly unavailable (502). Please try again."
-            : e?.message || "Failed to load cards"
-        );
+        setCardsErr(e?.message || "Failed to load cards");
       } finally {
         if (mounted) setLoadingCards(false);
       }
@@ -239,7 +240,7 @@ export default function SAFMEDS() {
   async function loadSessions() {
     try {
       setLoadingSess(true);
-      const r = await fetch(`/api/safmeds?deck=${encodeURIComponent(deck)}`);
+      const r = await fetch(`/api/safmeds?${deck ? `deck=${encodeURIComponent(deck)}` : ""}`);
       const j: ApiList<Session> = await r.json();
       if (!j.ok) throw new Error(j.error || "Failed to load sessions");
       setSessions(j.data || []);
@@ -258,7 +259,7 @@ export default function SAFMEDS() {
     (async () => {
       setDailyBestErr(null);
       try {
-        const res = await fetch(`/api/safmeds-best?deck=${encodeURIComponent(deck)}`);
+        const res = await fetch(`/api/safmeds-best?${deck ? `deck=${encodeURIComponent(deck)}` : ""}`);
         if (!res.ok) throw new Error("daily-best endpoint not available");
         const payload: ApiList<DailyBestRow> = await res.json();
         if (!payload.ok) throw new Error(payload.error || "Failed to load daily best");
@@ -276,11 +277,7 @@ export default function SAFMEDS() {
 
   function computeBestOfDayFromSessions(rows: Session[]): DailyBestRow[] {
     const byDay = new Map<string, DailyBestRow>();
-    const score = (s: Session) => ({
-      primary: s.correct - s.incorrect,
-      secondary: s.correct,
-      tertiary: -s.duration_seconds,
-    });
+    const score = (s: Session) => ({ primary: s.correct - s.incorrect, secondary: s.correct, tertiary: -s.duration_seconds });
     const better = (a: Session, b: Session) => {
       const sa = score(a), sb = score(b);
       if (sa.primary !== sb.primary) return sa.primary > sb.primary ? a : b;
@@ -310,7 +307,7 @@ export default function SAFMEDS() {
   /* Save run (snapshot) */
   async function saveSessionSnapshot(correctSnap: number, incorrectSnap: number, durationSnap: number) {
     const payload = {
-      deck: deck || "GLOBAL",
+      deck: deck || null, // null when "All decks"
       correct: correctSnap,
       incorrect: incorrectSnap,
       duration_seconds: durationSnap,
@@ -384,19 +381,35 @@ export default function SAFMEDS() {
   const totalCards = correct + incorrect;
   const pct = totalCards > 0 ? Math.round((correct / totalCards) * 100) : 0;
 
+  // ✅ Safer shuffle (no destructuring swap; guard against undefined)
   const order: Card[] = useMemo(() => {
-    const arr = cards.slice();
-    if (!shuffle) return arr;
-    let s = seed >>> 0;
-    const rnd = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 0xffffffff; };
-    for (let i = arr.length - 1; i > 0; i--) {
+    const base: Card[] = Array.isArray(cards) ? [...cards] : [];
+    if (!shuffle || base.length < 2) return base;
+
+    // xorshift PRNG, stable per seed
+    let s = (seed >>> 0) || 1;
+    const rnd = () => {
+      s ^= s << 13;
+      s ^= s >>> 17;
+      s ^= s << 5;
+      return (s >>> 0) / 0xffffffff;
+    };
+
+    // Fisher–Yates with explicit temp swap
+    for (let i = base.length - 1; i > 0; i--) {
       const j = Math.floor(rnd() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
+      if (j !== i) {
+        const tmp = base[i];
+        base[i] = base[j];
+        base[j] = tmp;
+      }
     }
-    return arr;
+    return base;
   }, [cards, shuffle, seed]);
 
-  const current = order[idx];
+  // ✅ Safe index after reshuffles
+  const safeIdx = Math.max(0, Math.min(idx, Math.max(0, order.length - 1)));
+  const current = order[safeIdx];
 
   /* Actions */
   function resetCounters() {
@@ -508,13 +521,14 @@ export default function SAFMEDS() {
             defaultValue={deck}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
-                const v = (e.target as HTMLInputElement).value.trim() || "GLOBAL";
+                const v = (e.target as HTMLInputElement).value.trim();
                 const url = new URL(window.location.href);
-                url.searchParams.set("deck", v);
+                if (v) url.searchParams.set("deck", v);
+                else url.searchParams.delete("deck"); // blank = ALL
                 window.location.href = url.toString();
               }
             }}
-            placeholder="GLOBAL"
+            placeholder='(blank = All decks, or try "Global")'
             style={{ padding: "6px 10px", border: "1px solid #e5e7eb", borderRadius: 8 }}
           />
         </div>
@@ -563,12 +577,12 @@ export default function SAFMEDS() {
             <p style={{ color: "#b91c1c" }}>{cardsErr}</p>
           ) : order.length === 0 ? (
             <p style={{ opacity: 0.7 }}>
-              No cards in <b>{deck}</b>. Add some in <a href="/admin">/admin</a>.
+              No cards{deck ? ` in "${deck}"` : ""}. Try <b>Global</b> or clear the deck to see all.
             </p>
           ) : (
             <>
               <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>
-                Card {cards.length ? idx + 1 : 0} of {cards.length}
+                Card {order.length ? safeIdx + 1 : 0} of {order.length}
               </div>
 
               <SafmedsFlipCard
@@ -580,7 +594,7 @@ export default function SAFMEDS() {
                       {current?.term}
                     </strong>
                     <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      <span style={pill}>{current?.deck || "GLOBAL"}</span>
+                      <span style={pill}>{current?.deck ?? "—"}</span>
                       {current?.domain && <span style={pill}>{current.domain}</span>}
                     </div>
                   </>
@@ -594,7 +608,7 @@ export default function SAFMEDS() {
 
               {/* Grading */}
               <div style={{ display: "flex", gap: 12, marginTop: 12, alignItems: "center" }}>
-                <button onClick={prevCard} disabled={!cards.length || !running} style={btn}>← Prev</button>
+                <button onClick={prevCard} disabled={!order.length || !running} style={btn}>← Prev</button>
                 <button
                   onClick={markCorrect}
                   disabled={!running}
@@ -611,7 +625,7 @@ export default function SAFMEDS() {
                 >
                   ✗ Incorrect ({incorrect})
                 </button>
-                <button onClick={nextCard} disabled={!cards.length || !running} style={btn}>Next →</button>
+                <button onClick={nextCard} disabled={!order.length || !running} style={btn}>Next →</button>
 
                 <div style={{ marginLeft: "auto", display: "flex", gap: 12 }}>
                   <div style={{ padding: "6px 10px", border: "1px solid #e5e7eb", borderRadius: 8, background: "#f8fafc" }}>
@@ -649,7 +663,7 @@ export default function SAFMEDS() {
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
           <div>
             <h2 style={{ margin: 0 }}>Daily runs</h2>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>Best of day (America/Los_Angeles). Deck: <b>{deck}</b></div>
+            <div style={{ fontSize: 12, opacity: 0.75 }}>Best of day (America/Los_Angeles). Deck: <b>{deck || "All"}</b></div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <label style={{ fontSize: 12, opacity: 0.8 }}>Metric:</label>
@@ -669,7 +683,7 @@ export default function SAFMEDS() {
         {loadingSess ? (
           <p style={{ opacity: 0.7 }}>Loading…</p>
         ) : (dailyBest?.length || 0) === 0 ? (
-          <p style={{ opacity: 0.7 }}>No daily best runs yet for <b>{deck}</b>.</p>
+          <p style={{ opacity: 0.7 }}>No daily best runs yet{deck ? ` for "${deck}"` : ""}.</p>
         ) : (
           <>
             <LineChart data={chartData} />
@@ -723,7 +737,7 @@ export default function SAFMEDS() {
                   <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "space-between" }}>
                     <div>
                       <b>{t.toLocaleDateString()} {t.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</b>
-                      <div style={{ fontSize: 12, opacity: 0.75 }}>{s.duration_seconds}s · {s.deck || "GLOBAL"} {s.notes ? `· ${s.notes}` : ""}</div>
+                      <div style={{ fontSize: 12, opacity: 0.75 }}>{s.duration_seconds}s · {s.deck || "—"} {s.notes ? `· ${s.notes}` : ""}</div>
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
                       <span style={{ padding: "4px 8px", borderRadius: 6, background: "#dcfce7", border: "1px solid #86efac" }}>✓ {s.correct}</span>
@@ -741,4 +755,3 @@ export default function SAFMEDS() {
     </div>
   );
 }
-

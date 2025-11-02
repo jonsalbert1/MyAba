@@ -1,5 +1,5 @@
 // components/UserMenu.tsx
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
@@ -9,22 +9,30 @@ export default function UserMenu() {
   const [email, setEmail] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
 
-  // Load current session + subscribe to changes
+  // Build a safe ?next= param for sign-in
+  const signinHref = useMemo(() => {
+    // Prefer full asPath (includes query) and ensure it starts with "/"
+    const path = typeof router.asPath === "string" && router.asPath.startsWith("/")
+      ? router.asPath
+      : "/";
+    const next = encodeURIComponent(path);
+    return `/auth/signin?next=${next}`;
+  }, [router.asPath]);
+
   useEffect(() => {
     let mounted = true;
 
     const load = async () => {
       const { data } = await supabase.auth.getSession();
-      const session = data.session;
       if (!mounted) return;
 
+      const session = data.session;
       const userEmail = session?.user?.email ?? null;
       setEmail(userEmail);
 
-      // Optional admin probe
       if (session?.user?.id) {
         try {
-          const r = await fetch("/api/me", { cache: "no-store" });
+          const r = await fetch("/api/me?debug=0", { cache: "no-store" });
           const j = await r.json().catch(() => ({}));
           setIsAdmin(Boolean(j?.profile?.is_admin));
         } catch {
@@ -41,7 +49,7 @@ export default function UserMenu() {
       const userEmail = session?.user?.email ?? null;
       setEmail(userEmail);
       if (session?.user?.id) {
-        fetch("/api/me", { cache: "no-store" })
+        fetch("/api/me?debug=0", { cache: "no-store" })
           .then((r) => r.json())
           .then((j) => setIsAdmin(Boolean(j?.profile?.is_admin)))
           .catch(() => setIsAdmin(false));
@@ -60,7 +68,7 @@ export default function UserMenu() {
     await supabase.auth.signOut();
     setEmail(null);
     setIsAdmin(false);
-    router.replace("/"); // back to login page (index)
+    router.replace("/"); // back to home
   };
 
   return (
@@ -79,7 +87,8 @@ export default function UserMenu() {
           </button>
         </>
       ) : (
-        <Link className="text-sm underline" href="/">
+        // ✅ FIX: point to the actual sign-in page and preserve the intended destination
+        <Link className="text-sm underline" href={signinHref}>
           Sign in
         </Link>
       )}

@@ -1,32 +1,44 @@
-// components/TopNav.tsx
 import Link from "next/link";
-import { useRouter } from "next/router";
+import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
 
 export default function TopNav() {
-  const r = useRouter();
-  const is = (p: string) => r.pathname === p || r.pathname.startsWith(p + "/");
+  const [email, setEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    const sub = supabase.auth.onAuthStateChange(async (_event, session) => {
+      setEmail(session?.user?.email ?? null);
+    });
+    supabase.auth.getUser().then(({ data }) => setEmail(data.user?.email ?? null));
+    return () => sub.data.subscription.unsubscribe();
+  }, []);
+
+  async function signIn() {
+    const { error } = await supabase.auth.signInWithOAuth({ provider: "google" });
+    if (error) alert(error.message);
+  }
+  async function signOut() {
+    await supabase.auth.signOut();
+    window.location.href = "/";
+  }
 
   return (
-    <header className="sticky top-0 z-40 border-b bg-white/90 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl items-center gap-4 px-4 py-3">
-        <Link href="/" className="font-semibold tracking-tight text-slate-900">
-          myABA
-        </Link>
-        <nav className="ml-4 flex gap-3 text-sm">
-          <Link className={linkClass(is("/flashcards"))} href="/flashcards">Flashcards</Link>
-          <Link className={linkClass(is("/safmeds"))} href="/safmeds">SAFMEDS</Link>
-          <Link className={linkClass(is("/course"))} href="/course">Quiz</Link> {/* ✅ fixed */}
-          <Link className={linkClass(is("/admin"))} href="/admin">Admin</Link>
-        </nav>
-        <div className="ml-auto h-8 w-8 rounded-full bg-slate-200" aria-hidden />
-      </div>
+    <header className="sticky top-0 z-20 border-b bg-white/70 backdrop-blur">
+      <nav className="mx-auto flex max-w-5xl items-center justify-between p-3">
+        <Link href="/" className="font-semibold">myABA.app</Link>
+        <div className="flex items-center gap-4">
+          <Link href="/quiz" className="hover:underline">Quizzes</Link>
+          <Link href="/dashboard" className="hover:underline">Dashboard</Link>
+          {email ? (
+            <>
+              <span className="text-sm text-gray-600">{email}</span>
+              <button onClick={signOut} className="rounded-md border px-3 py-1 text-sm">Sign out</button>
+            </>
+          ) : (
+            <button onClick={signIn} className="rounded-md border px-3 py-1 text-sm">Sign in</button>
+          )}
+        </div>
+      </nav>
     </header>
   );
-}
-
-function linkClass(active: boolean) {
-  return [
-    "rounded-md px-2 py-1",
-    active ? "bg-slate-100 font-medium" : "text-slate-600 hover:text-slate-900"
-  ].join(" ");
 }

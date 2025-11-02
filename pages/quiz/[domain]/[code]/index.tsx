@@ -51,7 +51,7 @@ export default function QuizSubdomainPage() {
     [qs, answers]
   );
 
-  // ---- Robust loader: tries several shapes (subdomain, subdomain_code, domain+numeric, etc.)
+  // ---- Robust loader with SELECT-FIRST pattern (Supabase v2)
   useEffect(() => {
     if (!isReady || !code || !domain) return;
 
@@ -70,18 +70,21 @@ export default function QuizSubdomainPage() {
         const numeric = codeUpper.replace(/^[A-I]/i, ""); // "A1" -> "1"
         const attempts: { name: string; count: number; error?: string }[] = [];
 
-        async function run(q: ReturnType<typeof supabase.from>) {
-          const { data, error } = await q.select(selectCols).limit(10);
+        // Helper: run a fully built query (must already have .select() in it)
+        async function run<T>(builder: ReturnType<typeof supabase.from>) {
+          const { data, error } = await builder.limit(10);
           return { data: (data ?? []) as Q[], error };
         }
 
+        // Base builder with SELECT applied first (critical for v2)
+        const base = supabase.from("quiz_questions").select(selectCols);
+
         let found: Q[] = [];
 
-        // A) subdomain == "A1" (+ published true OR null so drafts show while debugging)
+        // A) subdomain == "A1"
         {
           const { data, error } = await run(
-            supabase
-              .from("quiz_questions")
+            base
               .eq("subdomain", codeUpper)
               .or("published.is.true,published.is.null")
               .order("id", { ascending: true })
@@ -93,8 +96,7 @@ export default function QuizSubdomainPage() {
         // B) subdomain ILIKE "A1" (legacy casing)
         if (!found.length) {
           const { data, error } = await run(
-            supabase
-              .from("quiz_questions")
+            base
               .ilike("subdomain", codeUpper)
               .or("published.is.true,published.is.null")
               .order("id", { ascending: true })
@@ -106,10 +108,9 @@ export default function QuizSubdomainPage() {
         // C) domain == "A" AND subdomain_code == "1"
         if (!found.length) {
           const { data, error } = await run(
-            supabase
-              .from("quiz_questions")
+            base
               .eq("domain", domain.toUpperCase())
-              .eq("subdomain_code", numeric)     // tolerate schema with subdomain_code
+              .eq("subdomain_code", numeric as any) // tolerate schema variant
               .or("published.is.true,published.is.null")
               .order("id", { ascending: true })
           );
@@ -117,11 +118,10 @@ export default function QuizSubdomainPage() {
           if (data.length) found = data;
         }
 
-        // D) domain == "A" AND subdomain == "1" (older imports with numeric-only subdomain)
+        // D) domain == "A" AND subdomain == "1" (older imports)
         if (!found.length) {
           const { data, error } = await run(
-            supabase
-              .from("quiz_questions")
+            base
               .eq("domain", domain.toUpperCase())
               .eq("subdomain", numeric)
               .or("published.is.true,published.is.null")
@@ -131,11 +131,10 @@ export default function QuizSubdomainPage() {
           if (data.length) found = data;
         }
 
-        // E) loose fallback: subdomain ILIKE "A%" (lets you at least see something for debugging)
+        // E) loose fallback: subdomain ILIKE "A%"
         if (!found.length) {
           const { data, error } = await run(
-            supabase
-              .from("quiz_questions")
+            base
               .ilike("subdomain", `${domain.toUpperCase()}%`)
               .or("published.is.true,published.is.null")
               .order("id", { ascending: true })
@@ -187,8 +186,7 @@ export default function QuizSubdomainPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          code,               // e.g., "A1"
-          domain,             // optional hint
+          subdomain: code,          // <- server expects `subdomain`
           last_index: qs.length,
           best_accuracy: pct,
           done: qs.length >= 10,

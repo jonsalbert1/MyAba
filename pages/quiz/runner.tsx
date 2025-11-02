@@ -51,6 +51,15 @@ function debounce<T extends (...args: any[]) => void>(fn: T, ms: number) {
   };
 }
 
+/** ✅ Narrow the domain letter to the exact union that useQuizProgress expects */
+type DomainLetter = "A"|"B"|"C"|"D"|"E"|"F"|"G"|"H"|"I";
+function toDomainLetter(s: string): DomainLetter {
+  const L = (s?.charAt(0) ?? "A").toUpperCase();
+  return (["A","B","C","D","E","F","G","H","I"] as const).includes(L as DomainLetter)
+    ? (L as DomainLetter)
+    : "A";
+}
+
 /* =========================
    Component
 ========================= */
@@ -81,7 +90,7 @@ export default function QuizRunner() {
 
   // URL / params
   const [code, setCode] = useState(initial);
-  const letter = code[0].toUpperCase();
+  const letter: DomainLetter = toDomainLetter(code);           // ⬅️ narrowed type
   const { actions } = useQuizProgress(letter, code);
 
   // Controls
@@ -409,7 +418,7 @@ export default function QuizRunner() {
             </select>
           </label>
 
-          <label className="text-sm">
+        <label className="text-sm">
             Limit
             <input
               type="number"

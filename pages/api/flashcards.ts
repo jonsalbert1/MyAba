@@ -56,15 +56,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           // Base query (no range yet)
           let q = supabase.from(table).select(sel, { count: "exact" });
 
-          // ✅ Case-insensitive deck filter.
-          // If user requests "global" (any case), include rows where deck is NULL as well.
+          // Case-insensitive deck filter.
           if (deck) {
             const d = deck.toLowerCase();
             if (d === "global") {
               // include NULL + any case variant of "global"
               q = q.or(`deck.is.null,deck.ilike.${deck}`);
             } else {
-              // exact match, case-insensitive (no wildcards)
+              // exact-ish case-insensitive match (no wildcards)
               q = q.ilike("deck", deck);
             }
           }
@@ -77,7 +76,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           // Out-of-range offset returns empty page (not 500)
           if (offset >= total) {
             return res.status(200).json({
-              ok: true, table, count: total, cards: [], limit, offset,
+              ok: true,
+              table,
+              count: total,
+              cards: [] as Row[],
+              limit,
+              offset,
             });
           }
 
@@ -87,11 +91,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           const { data, error } = await q.range(start, end);
           if (error) throw error;
 
+          // ✅ Type-safe guard for build: cast via unknown first
+          const rows: Row[] = Array.isArray(data) ? ((data as unknown) as Row[]) : [];
+
           return res.status(200).json({
             ok: true,
             table,
             count: total,
-            cards: (data as Row[]) ?? [],
+            cards: rows,
             limit,
             offset,
           });

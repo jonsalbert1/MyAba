@@ -1,69 +1,79 @@
+// pages/api/quiz/fetch/index.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-/** GET /api/quiz/fetch?domain=A&code=A1&limit=10&shuffle=1&debug=1 */
+/**
+ * GET /api/quiz/fetch?domain=A&code=A1&limit=10&shuffle=1&debug=1
+ * Returns quiz questions from Supabase.
+ */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  res.setHeader("Cache-Control", "no-store");
+
   try {
     if (req.method !== "GET") {
-      res.setHeader("Cache-Control", "no-store");
       return res.status(405).json({ ok: false, error: "Use GET" });
     }
 
-    const domain = String(req.query.domain ?? "").trim();
-    const code   = String(req.query.code ?? "").trim();
-    const limit  = Math.max(1, Math.min(50, Number(req.query.limit ?? 10)));
-    const shuffle = !!req.query.shuffle;
-    const debug   = !!req.query.debug;
+    const domain = String(req.query.domain ?? "").trim().toUpperCase();
+    const codeUpper = String(req.query.code ?? "").trim().toUpperCase();
+    const limit = Math.max(1, Math.min(50, Number(req.query.limit ?? 10)));
+    const shuffle = req.query.shuffle === "1" || req.query.shuffle === "true";
+    const debug = req.query.debug === "1" || req.query.debug === "true";
 
-    // Select ALL fields the runner expects
+    // ✅ Build base query with .select() first
     let q = supabaseAdmin
       .from("quiz_questions")
       .select(
-        [
-          "id",
-          "domain",
-          "subdomain",
-          "subdomain_text",
-          "statement",
-          "question",
-          "a","b","c","d",
-          "correct_answer",
-          "rationale_correct",
-          "rationale_a","rationale_b","rationale_c","rationale_d",
-          "created_at"
-        ].join(", "),
+        `
+        id,
+        domain,
+        subdomain,
+        subdomain_text,
+        statement,
+        question,
+        a, b, c, d,
+        correct_answer,
+        rationale_correct,
+        rationale_a, rationale_b, rationale_c, rationale_d,
+        created_at
+      `,
         { count: "exact" }
       );
 
-    // Case-insensitive filters
-    // If your DB has variants like "a1" or "A-1", switch to %...% partials below.
+    // ✅ Apply exact match first; fallback to case-insensitive
     if (domain) q = q.ilike("domain", domain);
-    if (code)   q = q.ilike("subdomain", code);
+    if (codeUpper) q = q.eq("subdomain", codeUpper);
 
-    // For more forgiving matching, use this instead:
-    // if (domain) q = q.ilike("domain", `%${domain}%`);
-    // if (code)   q = q.ilike("subdomain", `%${code}%`);
+    // Optional filter for published visibility
+    q = q.or("published.is.true,published.is.null");
 
-    q = q.limit(limit);
+    // Order & limit
+    q = q.order("id", { ascending: true }).limit(limit);
 
     const { data, error, count } = await q;
+
     if (error) {
-      res.setHeader("Cache-Control", "no-store");
-      return res.status(500).json({ ok: false, error: error.message });
+      return res.status(500).json({
+        ok: false,
+        error: error.message,
+        hint: "Check that the 'quiz_questions' table and its columns exist in Supabase.",
+      });
     }
 
+    // ✅ Always return an array
     let rows = Array.isArray(data) ? data : [];
-    if (shuffle) rows = rows.slice().sort(() => Math.random() - 0.5);
+    if (shuffle) rows = [...rows].sort(() => Math.random() - 0.5);
 
-    res.setHeader("Cache-Control", "no-store");
     return res.status(200).json({
       ok: true,
       count: count ?? null,
-      ...(debug ? { filters: { domain, code, limit, shuffle }, sample: rows.slice(0, 3) } : {}),
+      ...(debug ? { filters: { domain, code: codeUpper, limit, shuffle }, sample: rows.slice(0, 3) } : {}),
       data: rows,
     });
   } catch (e: any) {
-    res.setHeader("Cache-Control", "no-store");
-    return res.status(500).json({ ok: false, error: e?.message ?? "Unexpected error" });
+    return res.status(500).json({
+      ok: false,
+      error: e?.message ?? "Unexpected error",
+    });
   }
 }

@@ -74,7 +74,7 @@ export default function QuizRunner() {
   const [roundId, setRoundId] = useState<number>(0);
   useEffect(() => {
     const L = initial[0].toUpperCase();
-    const raw = localStorage.getItem(`quiz:round:${L}`);
+    const raw = typeof window !== "undefined" ? localStorage.getItem(`quiz:round:${L}`) : null;
     const n = raw ? Number(raw) : 0;
     setRoundId(Number.isFinite(n) ? n : 0);
   }, [initial]);
@@ -330,8 +330,8 @@ export default function QuizRunner() {
     if (nxt) {
       router.replace({ pathname: "/quiz/runner", query: { code: nxt } });
     } else {
-      // End of domain → go to domain overview
-      router.replace({ pathname: `/quiz/${letter}` });
+      // End of domain → go to single-page TOC
+      router.replace({ pathname: "/quiz" });
     }
   }
 
@@ -397,7 +397,7 @@ export default function QuizRunner() {
         </div>
       </header>
 
-      {/* Progress card */}
+      {/* Progress & controls */}
       <section className="mb-5 rounded-lg border p-3">
         <div className="mb-2 flex items-center justify-between text-sm">
           <div>
@@ -601,9 +601,9 @@ export default function QuizRunner() {
                 type="button"
                 onClick={finishSubdomain}
                 className="rounded-md border bg-black px-3 py-1.5 text-sm text-white hover:opacity-90"
-                title="Save your score and go to the next subdomain or domain overview"
+                title="Save your score and go to the next subdomain or TOC"
               >
-                {nextCode(code) ? `Save & Next (${nextCode(code)})` : `Save & Domain ${letter}`}
+                {nextCode(code) ? `Save & Next (${nextCode(code)})` : `Save & TOC`}
               </button>
               <button
                 type="button"

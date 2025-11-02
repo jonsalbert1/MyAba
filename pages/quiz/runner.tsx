@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 import { useQuizProgress } from "@/lib/useQuizProgress";
+import { getDomainTitle, getSubdomainText } from "@/lib/tco";
 
 /* =========================
    Types
@@ -37,11 +38,13 @@ const normChoice = (v: any): "A" | "B" | "C" | "D" | undefined => {
   const m = String(v ?? "").toUpperCase().match(/[ABCD]/);
   return (m?.[0] as any) || undefined;
 };
-const nextCode = (c: string) => {
-  const L = c[0].toUpperCase();
+/** Next code in-domain; returns null if already at last subdomain for the domain */
+const nextCode = (c: string): string | null => {
+  const L = c[0]?.toUpperCase();
   const n = Number(c.slice(1)) || 1;
   const max = COUNTS[L] || 1;
-  return `${L}${Math.min(max, n + 1)}`;
+  if (!L || !max) return null;
+  return n < max ? `${L}${n + 1}` : null;
 };
 function debounce<T extends (...args: any[]) => void>(fn: T, ms: number) {
   let t: any;
@@ -297,7 +300,7 @@ export default function QuizRunner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [answers, items, hasSession, code]);
 
-  // Finish & auto-advance to next subdomain
+  // Finish & auto-advance to next subdomain (or domain overview if end)
   async function finishSubdomain() {
     try {
       localStorage.setItem(`quiz:lastCode:${letter}`, code);
@@ -324,7 +327,12 @@ export default function QuizRunner() {
     setTimeout(() => setFinishMsg(null), 1200);
 
     const nxt = nextCode(code);
-    router.replace({ pathname: "/quiz/runner", query: { code: nxt } });
+    if (nxt) {
+      router.replace({ pathname: "/quiz/runner", query: { code: nxt } });
+    } else {
+      // End of domain → go to domain overview
+      router.replace({ pathname: `/quiz/${letter}` });
+    }
   }
 
   // Keyboard shortcuts: 1–4 answer, N to advance on wrong/after viewing
@@ -356,23 +364,37 @@ export default function QuizRunner() {
   const progressPercent = items.length ? Math.round((answeredCount / items.length) * 100) : 0;
   const correctSoFarPercent = items.length ? Math.round((correctCount / items.length) * 100) : 0;
 
+  // Domain/subdomain presentation text
+  const domainTitle = getDomainTitle(letter);
+  const subdomainText = getSubdomainText(code);
+
   /* =========================
      Render
   ========================= */
   return (
     <main className="mx-auto max-w-3xl px-4 py-8">
-      {/* Header (subtitle removed as requested) */}
-      <header className="mb-6 flex items-end justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Quiz</h1>
-          <div className="mt-1 text-sm text-gray-600">
-            Subdomain <strong>{code}</strong> · {subLocalDone ? "✅ Completed" : "Not completed"} · Accuracy{" "}
-            <strong>{subLocalAcc != null ? `${subLocalAcc}%` : "—"}</strong>
+      {/* Header with Domain/Subdomain text */}
+      <header className="mb-6">
+        <div className="flex items-end justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold">Quiz</h1>
+            <div className="mt-1 text-sm text-gray-600">
+              <span className="uppercase tracking-wide">Domain {letter}</span>
+              {domainTitle && <span> · {domainTitle}</span>}
+              <span className="mx-1 text-gray-400">•</span>
+              Subdomain <strong>{code}</strong>
+              <span className="mx-1 text-gray-400">•</span>
+              {subLocalDone ? "✅ Completed" : "Not completed"} · Accuracy{" "}
+              <strong>{subLocalAcc != null ? `${subLocalAcc}%` : "—"}</strong>
+            </div>
+            {subdomainText && (
+              <p className="mt-2 text-sm text-gray-700">{subdomainText}</p>
+            )}
           </div>
+          <a href="/quiz" className="text-sm underline underline-offset-2 hover:opacity-80">
+            ← Back to TOC
+          </a>
         </div>
-        <a href="/quiz" className="text-sm underline underline-offset-2 hover:opacity-80">
-          ← Back to TOC
-        </a>
       </header>
 
       {/* Progress card */}
@@ -418,7 +440,7 @@ export default function QuizRunner() {
             </select>
           </label>
 
-        <label className="text-sm">
+          <label className="text-sm">
             Limit
             <input
               type="number"
@@ -469,7 +491,7 @@ export default function QuizRunner() {
         </div>
       )}
 
-      {/* Single question (no <ol>/<li> => no stray “1.”) */}
+      {/* Single question */}
       {current && (
         <div className="rounded-lg border p-4">
           <div className="mb-3 flex items-center justify-between text-xs">
@@ -492,8 +514,8 @@ export default function QuizRunner() {
               const chosen = selected === k;
               const right = normChoice(current.correct_answer);
               const borderClass =
-                selected &&
-                ((k === right && "border-green-400") || (chosen && k !== right && "border-red-300")) ||
+                (selected &&
+                  ((k === right && "border-green-400") || (chosen && k !== right && "border-red-300"))) ||
                 "border-gray-200";
               return (
                 <label
@@ -579,9 +601,9 @@ export default function QuizRunner() {
                 type="button"
                 onClick={finishSubdomain}
                 className="rounded-md border bg-black px-3 py-1.5 text-sm text-white hover:opacity-90"
-                title="Save your score and go to the next subdomain"
+                title="Save your score and go to the next subdomain or domain overview"
               >
-                Save & Next ({nextCode(code)})
+                {nextCode(code) ? `Save & Next (${nextCode(code)})` : `Save & Domain ${letter}`}
               </button>
               <button
                 type="button"

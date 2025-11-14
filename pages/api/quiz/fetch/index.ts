@@ -20,29 +20,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const shuffle = req.query.shuffle === "1" || req.query.shuffle === "true";
     const debug = req.query.debug === "1" || req.query.debug === "true";
 
-    // ✅ Build base query with .select() first
+    // ✅ Build base query with only existing columns
     let q = supabaseAdmin
       .from("quiz_questions")
       .select(
         `
         id,
+        exam_name,
         domain,
+        domain_text,
         subdomain,
         subdomain_text,
-        statement,
         question,
         a, b, c, d,
         correct_answer,
         rationale_correct,
-        rationale_a, rationale_b, rationale_c, rationale_d,
+        data_id,
+        date,
+        published,
         created_at
       `,
         { count: "exact" }
       );
 
-    // ✅ Apply exact match first; fallback to case-insensitive
-    if (domain) q = q.ilike("domain", domain);
-    if (codeUpper) q = q.eq("subdomain", codeUpper);
+    // ✅ Apply filters
+    if (domain) q = q.ilike("domain", domain);      // domain = "A"..."I"
+    if (codeUpper) q = q.eq("subdomain", codeUpper); // subdomain = "A1", "B2", etc.
 
     // Optional filter for published visibility
     q = q.or("published.is.true,published.is.null");
@@ -67,7 +70,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).json({
       ok: true,
       count: count ?? null,
-      ...(debug ? { filters: { domain, code: codeUpper, limit, shuffle }, sample: rows.slice(0, 3) } : {}),
+      ...(debug
+        ? { filters: { domain, code: codeUpper, limit, shuffle }, sample: rows.slice(0, 3) }
+        : {}),
       data: rows,
     });
   } catch (e: any) {

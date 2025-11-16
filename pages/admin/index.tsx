@@ -2,35 +2,51 @@
 import type { GetServerSideProps } from "next";
 import { createServerSupabaseClient } from "@supabase/auth-helpers-nextjs";
 
+// Reuse the same env-based admin list pattern
+const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS ?? "")
+  .split(",")
+  .map(e => e.trim().toLowerCase())
+  .filter(Boolean);
+
 export default function AdminHome() {
   return (
     <main className="p-6 max-w-3xl mx-auto">
       <h1 className="text-2xl font-semibold">Admin</h1>
-      <p className="text-gray-600">Restricted area: uploads & management tools.</p>
+      <p className="text-gray-600">
+        Restricted area: uploads & management tools.
+      </p>
     </main>
   );
 }
 
 export const getServerSideProps: GetServerSideProps = async (ctx) => {
-  // This helper reads/writes cookies correctly for Pages Router
   const supabase = createServerSupabaseClient(ctx);
 
-  // Require a session
-  const { data: { user } } = await supabase.auth.getUser();
+  // ✅ Require a session
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
   if (!user) {
-    return { redirect: { destination: "/login", permanent: false } };
-    // Or: return { notFound: true } if you prefer a 404 for logged-out users
+    // Not logged in – send to login (or "/" if you prefer)
+    return {
+      redirect: {
+        destination: "/login",
+        permanent: false,
+      },
+    };
   }
 
-  // Check admin flag from profiles
-  const { data: profile, error } = await supabase
-    .from("profiles")
-    .select("is_admin")
-    .eq("id", user.id)
-    .maybeSingle();
+  const email = user.email?.toLowerCase() ?? "";
 
-  if (error) return { notFound: true };
-  if (!profile?.is_admin) return { notFound: true };
+  // ✅ Check if this email is in the admin list
+  const isAdmin = ADMIN_EMAILS.includes(email);
 
+  if (!isAdmin) {
+    // Logged in but not an admin – hide the page
+    return { notFound: true };
+  }
+
+  // ✅ Admin verified
   return { props: {} };
 };

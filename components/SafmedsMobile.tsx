@@ -1,11 +1,12 @@
 // components/SafmedsMobile.tsx
 import { useEffect, useRef, useState } from "react";
-import { supabase } from "@/lib/supabaseClient";
+import { useSupabaseClient, useUser } from "@supabase/auth-helpers-react";
 
 /* =========================
    Types
 ========================= */
 type Card = { id: string; term: string; definition: string; deck?: string | null };
+
 type Attempt = {
   timestampISO: string;
   duration_s: number;
@@ -23,9 +24,21 @@ interface SafmedsMobileProps {
    Helpers
 ========================= */
 const DEMO_CARDS: Card[] = [
-  { id: "1", term: "Interobserver Agreement (IOA)", definition: "Degree to which two observers record the same events in the same way." },
-  { id: "2", term: "Latency", definition: "Time between antecedent stimulus and onset of behavior." },
-  { id: "3", term: "Duration", definition: "Total time a behavior occurs." },
+  {
+    id: "1",
+    term: "Interobserver Agreement (IOA)",
+    definition: "Degree to which two observers record the same events in the same way.",
+  },
+  {
+    id: "2",
+    term: "Latency",
+    definition: "Time between antecedent stimulus and onset of behavior.",
+  },
+  {
+    id: "3",
+    term: "Duration",
+    definition: "Total time a behavior occurs.",
+  },
 ];
 
 function shuffled<T>(arr: T[]): T[] {
@@ -37,6 +50,7 @@ function shuffled<T>(arr: T[]): T[] {
   return a;
 }
 
+// Local (machine) midnight — aligns with your dev box
 function startOfToday(): Date {
   const now = new Date();
   return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
@@ -52,6 +66,9 @@ function endOfToday(): Date {
    Component
 ========================= */
 export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
+  const supabase = useSupabaseClient();
+  const user = useUser();
+
   // Controls
   const [duration, setDuration] = useState<number>(60); // 30 or 60
   const [shuffleOnStart, setShuffleOnStart] = useState<boolean>(true);
@@ -67,69 +84,62 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const runStartRef = useRef<string | null>(null);
 
-  // Counters (use refs so timer closures always see latest values)
+  // Counters
   const [correct, _setCorrect] = useState<number>(0);
   const [incorrect, _setIncorrect] = useState<number>(0);
   const correctRef = useRef(0);
   const incorrectRef = useRef(0);
+
   const setCorrect = (v: number | ((n: number) => number)) => {
     const nv = typeof v === "function" ? (v as any)(correctRef.current) : v;
-    correctRef.current = nv; _setCorrect(nv);
+    correctRef.current = nv;
+    _setCorrect(nv);
   };
+
   const setIncorrect = (v: number | ((n: number) => number)) => {
     const nv = typeof v === "function" ? (v as any)(incorrectRef.current) : v;
-    incorrectRef.current = nv; _setIncorrect(nv);
+    incorrectRef.current = nv;
+    _setIncorrect(nv);
   };
+
   const total = correct + incorrect;
   const accuracy = total ? Math.round((correct / total) * 100) : 0;
 
   // Today’s server attempts
   const [attempts, setAttempts] = useState<Attempt[]>([]);
 
-  // Auth token for API
-  const [authToken, setAuthToken] = useState<string | null>(null);
+  // For UI feedback when not authenticated / session expired
+  const [authWarning, setAuthWarning] = useState<string | null>(null);
 
-  const current = cards[index];
-
-  /* =========================
-     Auth: keep access token available
-  ========================= */
-  useEffect(() => {
-    let active = true;
-
-    (async () => {
-      const { data } = await supabase.auth.getSession();
-      if (active) setAuthToken(data.session?.access_token ?? null);
-    })();
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (active) setAuthToken(session?.access_token ?? null);
-    });
-
-    return () => {
-      active = false;
-      sub.subscription.unsubscribe();
-    };
-  }, []);
+  // Daily goal
+  const runsToday = attempts.length;
+  const goal = 5;
+  const goalReached = runsToday >= goal;
 
   /* =========================
      Load cards from API
   ========================= */
   useEffect(() => {
     let cancelled = false;
+
     (async () => {
       try {
-        const res = await fetch("/api/flashcards?limit=2000", { credentials: "include" });
+        const res = await fetch("/api/flashcards?limit=2000", {
+          credentials: "include",
+        });
         if (!res.ok) throw new Error("flashcards api error");
+
         const json = await res.json();
-        const list: Card[] = Array.isArray(json?.cards) && json.cards.length
-          ? json.cards.map((c: any) => ({
-              id: String(c.id),
-              term: String(c.term ?? ""),
-              definition: String(c.definition ?? ""),
-              deck: c.deck ?? null,
-            }))
-          : DEMO_CARDS;
+        const list: Card[] =
+          Array.isArray(json?.cards) && json.cards.length
+            ? json.cards.map((c: any) => ({
+                id: String(c.id),
+                term: String(c.term ?? ""),
+                definition: String(c.definition ?? ""),
+                deck: c.deck ?? null,
+              }))
+            : DEMO_CARDS;
+
         if (!cancelled) {
           setCards(list);
           setIndex(0);
@@ -143,7 +153,10 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
         }
       }
     })();
-    return () => { cancelled = true; };
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   /* =========================
@@ -151,6 +164,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
   ========================= */
   useEffect(() => {
     if (!running) return;
+
     timerRef.current = setInterval(() => {
       setRemaining((t) => {
         if (t <= 1) {
@@ -163,7 +177,11 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
         return t - 1;
       });
     }, 1000);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running]);
 
   useEffect(() => {
@@ -176,35 +194,41 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.code === "Space") {
-        if (running) { e.preventDefault(); setShowBack((s) => !s); }
+        if (running) {
+          e.preventDefault();
+          setShowBack((s) => !s);
+        }
       } else if (running && e.key === "ArrowRight") {
-        e.preventDefault(); next();
+        e.preventDefault();
+        next();
       } else if (running && e.key === "ArrowLeft") {
-        e.preventDefault(); prev();
+        e.preventDefault();
+        prev();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running, index]);
 
   /* =========================
-     Server: fetch today’s runs
+     Server: fetch today’s runs (direct from Supabase; RLS-safe)
   ========================= */
   async function fetchToday() {
     try {
       const s = startOfToday().toISOString();
       const e = endOfToday().toISOString();
-      const r = await fetch(
-        `/api/safmeds/week?start=${encodeURIComponent(s)}&end=${encodeURIComponent(e)}`,
-        {
-          credentials: "include",
-          headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-        }
-      );
-      if (!r.ok) { setAttempts([]); return; }
-      const json = await r.json();
-      const rows = Array.isArray(json?.data) ? json.data : [];
-      const mapped: Attempt[] = rows.map((v: any) => {
+
+      const { data, error } = await supabase
+        .from("safmeds_runs")
+        .select("run_started_at, duration_seconds, correct, incorrect")
+        .gte("run_started_at", s)
+        .lt("run_started_at", e)
+        .order("run_started_at", { ascending: true });
+
+      if (error) throw error;
+
+      const mapped: Attempt[] = (data ?? []).map((v: any) => {
         const c = Number(v.correct ?? 0);
         const ic = Number(v.incorrect ?? 0);
         const tot = c + ic;
@@ -217,15 +241,22 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
           accuracy_pct: tot ? Math.round((c / tot) * 100) : 0,
         };
       });
-      // chronological
-      setAttempts(mapped.sort((a, b) =>
-        new Date(a.timestampISO).getTime() - new Date(b.timestampISO).getTime()
-      ));
-    } catch {
+
+      setAttempts(mapped);
+    } catch (err) {
+      console.warn("fetchToday error", err);
       setAttempts([]);
     }
   }
-  useEffect(() => { fetchToday(); }, [authToken]);
+
+  useEffect(() => {
+    if (!user) {
+      setAttempts([]);
+      return;
+    }
+    fetchToday();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase, user?.id]);
 
   /* =========================
      Run controls
@@ -276,37 +307,54 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
 
   /* =========================
      Save run to server
+     - Always fetch a fresh token to avoid "Auth session missing!"
   ========================= */
   async function saveRun(auto = false) {
     try {
       const now = new Date().toISOString();
+
+      // Get a fresh access token right before calling the API
+      const { data: sessionRes } = await supabase.auth.getSession();
+      const token = sessionRes?.session?.access_token ?? null;
+
+      if (!token || !user) {
+        setAuthWarning("You’re not signed in. Please sign in to save runs.");
+        return;
+      } else {
+        setAuthWarning(null);
+      }
+
       const body = {
         deck: deckName || null,
         duration_seconds: duration,
         correct: correctRef.current,
         incorrect: incorrectRef.current,
         run_started_at: runStartRef.current ?? now,
-        run_ended_at: now,
       };
+
       const resp = await fetch("/api/safmeds/run", {
         method: "POST",
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
-          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify(body),
       });
-      const json = await resp.json();
-      if (!json?.ok) {
-        console.warn("Save run failed:", json?.error);
+
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok || !json?.ok) {
+        console.warn("Save run failed:", json?.error || resp.statusText);
+        if (resp.status === 401) {
+          setAuthWarning("Session expired. Please sign in again.");
+        }
       }
     } catch (e) {
       console.warn("Save run error:", e);
     } finally {
-      await fetchToday(); // server truth
+      await fetchToday(); // refresh from server truth
       if (!auto) {
-        // optional toast here
+        // optional toast hook could go here
       }
     }
   }
@@ -315,48 +363,57 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
      Export (today CSV)
   ========================= */
   function exportCSV() {
-    const headers = ["timestamp_iso","duration_s","correct","incorrect","total","accuracy_pct"];
-    const rows = attempts.map(a => [
-      JSON.stringify(a.timestampISO),
-      a.duration_s, a.correct, a.incorrect, a.total, a.accuracy_pct
-    ].join(","));
+    const headers = [
+      "timestamp_iso",
+      "duration_s",
+      "correct",
+      "incorrect",
+      "total",
+      "accuracy_pct",
+    ];
+    const rows = attempts.map((a) =>
+      [
+        JSON.stringify(a.timestampISO),
+        a.duration_s,
+        a.correct,
+        a.incorrect,
+        a.total,
+        a.accuracy_pct,
+      ].join(","),
+    );
     const csv = [headers.join(","), ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `safmeds_today_${new Date().toISOString().slice(0,10)}.csv`;
+    a.download = `safmeds_today_${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
 
   /* =========================
      Tiny SVG chart (today, last 5)
-     - Adds safe inner padding (no clipping)
-     - Smaller dots and thin line
   ========================= */
   function AttemptsChart() {
-    // draw only the last 5 attempts
     const last = attempts.slice(-5);
     const N = Math.max(1, last.length);
 
-    // Chart sizing
-    const W = 100;                   // svg viewBox width
-    const H = 44;                    // svg viewBox height (slightly taller)
-    const PAD = 6;                   // inner padding on all sides
+    const W = 100;
+    const H = 44;
+    const PAD = 6;
     const innerH = H - PAD * 2;
 
-    // x-range kept away from edges so dots never clip
     const X_L = 6;
     const X_R = 94;
 
-    // values to plot (net = correct - incorrect)
-    const pts = last.map(a => ({ net: a.correct - a.incorrect }));
+    const pts = last.map((a) => ({ net: a.correct - a.incorrect }));
 
-    const vals = pts.map(p => p.net);
-    let yMin = 0, yMax = 1;
+    const vals = pts.map((p) => p.net);
+    let yMin = 0,
+      yMax = 1;
     if (vals.length) {
-      const minV = Math.min(...vals), maxV = Math.max(...vals);
+      const minV = Math.min(...vals);
+      const maxV = Math.max(...vals);
       if (minV === maxV) {
         yMin = Math.min(0, minV - 1);
         yMax = maxV + 1;
@@ -367,15 +424,13 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
       }
     }
 
-    const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-
+    const clamp = (v: number, lo: number, hi: number) =>
+      Math.max(lo, Math.min(hi, v));
     const xOf = (i: number) =>
       N === 1 ? 50 : X_L + ((X_R - X_L) * i) / (N - 1);
-
     const yOf = (v: number) => {
       const t = (v - yMin) / Math.max(1, yMax - yMin);
       const y = H - (t * innerH + PAD);
-      // keep dots/line fully inside
       return clamp(y, PAD + 0.5, H - PAD - 0.5);
     };
 
@@ -385,7 +440,9 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
       return H - (t * innerH + PAD);
     });
 
-    const d = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${xOf(i)},${yOf(p.net)}`).join(" ");
+    const d = pts
+      .map((p, i) => `${i === 0 ? "M" : "L"} ${xOf(i)},${yOf(p.net)}`)
+      .join(" ");
 
     return (
       <svg
@@ -393,12 +450,18 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
         className="h-[140px] w-full"
         preserveAspectRatio="none"
       >
-        {/* light horizontal grid */}
         {gridYs.map((gy, i) => (
-          <line key={i} x1={0} y1={gy} x2={W} y2={gy} stroke="currentColor" opacity="0.06" strokeWidth="0.3" />
+          <line
+            key={i}
+            x1={0}
+            y1={gy}
+            x2={W}
+            y2={gy}
+            stroke="currentColor"
+            opacity="0.06"
+            strokeWidth="0.3"
+          />
         ))}
-
-        {/* connecting line */}
         {pts.length > 1 && (
           <path
             d={d}
@@ -410,8 +473,6 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
             vectorEffect="non-scaling-stroke"
           />
         )}
-
-        {/* dots */}
         {pts.map((p, i) => (
           <circle
             key={i}
@@ -430,6 +491,8 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
   /* =========================
      Render
   ========================= */
+  const current = cards[index];
+
   return (
     <main className="mx-auto max-w-screen-sm px-3 pb-28 pt-2 sm:px-4">
       {/* Header: Start/Pause + Timer */}
@@ -437,14 +500,19 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
         <div className="mx-auto flex max-w-screen-sm items-center gap-2 px-3 py-2 sm:px-4">
           <button
             onClick={startStop}
-            className={`min-w-[92px] rounded-xl px-4 py-2 text-sm font-semibold shadow ${running ? "bg-gray-900 text-white" : "bg-blue-600 text-white"}`}
+            className={`min-w-[92px] rounded-xl px-4 py-2 text-sm font-semibold shadow ${
+              running ? "bg-gray-900 text-white" : "bg-blue-600 text-white"
+            }`}
           >
             {running ? "Pause" : "Start"}
           </button>
           <div className="ml-auto text-right">
-            <div className="text-[11px] uppercase tracking-wide text-gray-500">Time</div>
+            <div className="text-[11px] uppercase tracking-wide text-gray-500">
+              Time
+            </div>
             <div className="text-2xl font-bold tabular-nums">
-              {String(Math.floor(remaining / 60)).padStart(2, "0")}:{String(remaining % 60).padStart(2, "0")}
+              {String(Math.floor(remaining / 60)).padStart(2, "0")}:
+              {String(remaining % 60).padStart(2, "0")}
             </div>
           </div>
         </div>
@@ -453,14 +521,18 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
       {/* Controls */}
       <section className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
         <label>
-          <span className="block text-xs font-medium text-gray-600">Duration</span>
+          <span className="block text-xs font-medium text-gray-600">
+            Duration
+          </span>
           <select
             value={duration}
             onChange={(e) => setDuration(Number(e.target.value))}
             className="mt-1 w-full rounded-xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
           >
             {[30, 60].map((s) => (
-              <option key={s} value={s}>{s}s</option>
+              <option key={s} value={s}>
+                {s}s
+              </option>
             ))}
           </select>
         </label>
@@ -476,22 +548,36 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
         </label>
 
         <div className="col-span-2 sm:col-span-1">
-          <span className="block text-xs font-medium text-gray-600">Deck</span>
+          <span className="block text-xs font-medium text-gray-600">
+            Deck
+          </span>
           <div className="mt-1 w-full rounded-xl border px-3 py-2 text-sm text-gray-700">
             {deckName || "(admin-controlled)"}
           </div>
         </div>
       </section>
 
+      {/* Auth warning (if needed) */}
+      {authWarning && (
+        <div className="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          {authWarning}
+        </div>
+      )}
+
       {/* Card */}
       <section className="mb-2 select-none rounded-2xl border bg-white p-4 shadow-sm">
         <div className="mb-2 flex items-center justify-between text-xs text-gray-500">
-          <span>Card {index + 1} of {cards.length}</span>
-          {!!deckName && <span className="rounded-full bg-gray-100 px-2 py-0.5">{deckName}</span>}
+          <span>
+            Card {index + 1} of {cards.length}
+          </span>
+          {!!deckName && (
+            <span className="rounded-full bg-gray-100 px-2 py-0.5">
+              {deckName}
+            </span>
+          )}
         </div>
 
         <div className="min-h-[140px] cursor-pointer" onClick={flip}>
-          {/* TERM first; DEF on flip */}
           {!showBack ? (
             <div className="text-balance text-2xl font-semibold leading-snug sm:text-3xl">
               {current?.term ?? "—"}
@@ -512,7 +598,9 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
             onClick={() => mark(true)}
             disabled={!running || !showBack}
             className={`rounded-xl px-4 py-3 text-base font-semibold text-white shadow active:scale-[.99] ${
-              running && showBack ? "bg-green-600" : "bg-green-300 cursor-not-allowed"
+              running && showBack
+                ? "bg-green-600"
+                : "bg-green-300 cursor-not-allowed"
             }`}
           >
             ✓ Correct ({correct})
@@ -530,8 +618,12 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
 
         {/* Nav prev/next (small) */}
         <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
-          <button onClick={prev} className="rounded-lg border px-3 py-1">← Prev</button>
-          <button onClick={next} className="rounded-lg border px-3 py-1">Next →</button>
+          <button onClick={prev} className="rounded-lg border px-3 py-1">
+            ← Prev
+          </button>
+          <button onClick={next} className="rounded-lg border px-3 py-1">
+            Next →
+          </button>
         </div>
       </section>
 
@@ -543,22 +635,35 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
         </div>
         <div className="rounded-xl border p-2">
           <div className="text-gray-500">Accuracy</div>
-          <div className="text-lg font-semibold tabular-nums">{accuracy}%</div>
+          <div className="text-lg font-semibold tabular-nums">
+            {accuracy}%
+          </div>
         </div>
         <div className="rounded-xl border p-2">
           <div className="text-gray-500">Deck</div>
-          <div className="text-lg font-semibold">{deckName || "(admin)"}</div>
+          <div className="text-lg font-semibold">
+            {deckName || "(admin)"}
+          </div>
         </div>
       </section>
 
       <section className="mb-3 flex flex-wrap items-center gap-2">
-        <button onClick={() => saveRun(false)} className="rounded-xl border px-3 py-2 text-sm">
+        <button
+          onClick={() => saveRun(false)}
+          className="rounded-xl border px-3 py-2 text-sm"
+        >
           Save run now
         </button>
-        <button onClick={exportCSV} className="rounded-xl border px-3 py-2 text-sm">
+        <button
+          onClick={exportCSV}
+          className="rounded-xl border px-3 py-2 text-sm"
+        >
           Export CSV (today)
         </button>
-        <button onClick={resetCounters} className="rounded-xl border px-3 py-2 text-sm">
+        <button
+          onClick={resetCounters}
+          className="rounded-xl border px-3 py-2 text-sm"
+        >
           Reset counters
         </button>
       </section>
@@ -567,7 +672,16 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
       <section className="mb-4 rounded-2xl border p-3">
         <div className="mb-2 flex items-center justify-between">
           <h3 className="text-sm font-semibold">Today’s attempts</h3>
-          <div className="text-xs text-gray-500">{attempts.length} run(s)</div>
+          <div className="text-xs text-gray-500 flex items-center gap-1">
+            <span>
+              {runsToday} / {goal} runs
+            </span>
+            {goalReached && (
+              <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-[1px] text-[10px] font-semibold text-green-800">
+                Goal met 🎉
+              </span>
+            )}
+          </div>
         </div>
         <div className="w-full rounded-xl border bg-white">
           {attempts.slice(-5).length === 0 ? (
@@ -601,17 +715,28 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
             <tbody>
               {attempts.slice(-5).reverse().map((r, i) => (
                 <tr key={i} className="border-t">
-                  <td className="px-2 py-1">{new Date(r.timestampISO).toLocaleTimeString()}</td>
+                  <td className="px-2 py-1">
+                    {new Date(r.timestampISO).toLocaleTimeString()}
+                  </td>
                   <td className="px-2 py-1 tabular-nums">{r.correct}</td>
                   <td className="px-2 py-1 tabular-nums">{r.incorrect}</td>
                   <td className="px-2 py-1 tabular-nums">{r.total}</td>
-                  <td className="px-2 py-1 tabular-nums">{r.accuracy_pct}</td>
-                  <td className="px-2 py-1 tabular-nums">{r.duration_s}</td>
+                  <td className="px-2 py-1 tabular-nums">
+                    {r.accuracy_pct}
+                  </td>
+                  <td className="px-2 py-1 tabular-nums">
+                    {r.duration_s}
+                  </td>
                 </tr>
               ))}
               {attempts.slice(-5).length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-2 py-3 text-center text-gray-500">No runs yet today</td>
+                  <td
+                    colSpan={6}
+                    className="px-2 py-3 text-center text-gray-500"
+                  >
+                    No runs yet today
+                  </td>
                 </tr>
               )}
             </tbody>

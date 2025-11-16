@@ -45,3 +45,8 @@ h3{font-size:16px;margin:0 0 8px}
   .table td::before{content:attr(data-label);font-weight:600;color:#475569}
 }
 footer{padding:30px 0;color:#94a3b8;text-align:center}
+/* Move Vercel preview badge down so it doesn't cover Login */
+.vercel-badge,
+#__next-build-watcher {
+  top: 70px !important;
+}

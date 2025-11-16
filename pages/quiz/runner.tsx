@@ -1,20 +1,22 @@
 // pages/quiz/runner.tsx
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
-import { supabase } from "@/lib/supabaseClient";
-import { useQuizProgress } from "@/lib/useQuizProgress";
 import { getDomainTitle, getSubdomainText } from "@/lib/tco";
 
 /* =========================
    Types
 ========================= */
+
 type QuizItem = {
   id: string;
   domain?: string | null;
-  subdomain: string;
+  subdomain: string; // e.g., "A3"
   statement?: string | null;
   question: string;
-  a: string; b: string; c: string; d: string;
+  a: string;
+  b: string;
+  c: string;
+  d: string;
   correct_answer: string;
   rationale_correct?: string | null;
   rationale_a?: string | null;
@@ -23,600 +25,509 @@ type QuizItem = {
   rationale_d?: string | null;
 };
 
-/* =========================
-   Helpers / constants
-========================= */
-const COUNTS: Record<string, number> = { A:5, B:24, C:12, D:9, E:12, F:8, G:19, H:8, I:7 };
-const SUBDOMAIN_CODES = Object.keys(COUNTS).flatMap((L) =>
-  Array.from({ length: COUNTS[L as keyof typeof COUNTS] }, (_, i) => `${L}${i + 1}`)
-);
+type ChoiceLetter = "A" | "B" | "C" | "D";
 
-const normCode = (v: any) => String(v ?? "A1").toUpperCase();
-const isValidCode = (c: string) => SUBDOMAIN_CODES.includes(c.toUpperCase());
-const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
-const normChoice = (v: any): "A" | "B" | "C" | "D" | undefined => {
-  const m = String(v ?? "").toUpperCase().match(/[ABCD]/);
-  return (m?.[0] as any) || undefined;
+type FetchState =
+  | { status: "idle" | "loading" }
+  | { status: "error"; message: string }
+  | { status: "loaded" };
+
+/* =========================
+   Domain / subdomain counts
+========================= */
+
+type DomainLetter = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I";
+
+const DOMAIN_COUNTS: Record<DomainLetter, number> = {
+  A: 5,
+  B: 24,
+  C: 12,
+  D: 9,
+  E: 12,
+  F: 8,
+  G: 19,
+  H: 8,
+  I: 7,
 };
-/** Next code in-domain; returns null if already at last subdomain for the domain */
-const nextCode = (c: string): string | null => {
-  const L = c[0]?.toUpperCase();
-  const n = Number(c.slice(1)) || 1;
-  const max = COUNTS[L] || 1;
-  if (!L || !max) return null;
-  return n < max ? `${L}${n + 1}` : null;
-};
-function debounce<T extends (...args: any[]) => void>(fn: T, ms: number) {
-  let t: any;
-  return (...args: Parameters<T>) => {
-    clearTimeout(t);
-    t = setTimeout(() => fn(...args), ms);
-  };
+
+const DEFAULT_LIMIT = 10;
+
+/* =========================
+   Helpers
+========================= */
+
+function parseCode(raw: string | string[] | undefined): {
+  domain: DomainLetter | null;
+  code: string | null;
+  index: number | null;
+} {
+  if (!raw) return { domain: null, code: null, index: null };
+  const s = Array.isArray(raw) ? raw[0] : raw;
+  if (!s || s.length < 2) return { domain: null, code: null, index: null };
+
+  const letter = s[0].toUpperCase() as DomainLetter;
+  const num = Number(s.slice(1));
+  if (!DOMAIN_COUNTS[letter] || !Number.isFinite(num) || num <= 0) {
+    return { domain: null, code: null, index: null };
+  }
+  return { domain: letter, code: `${letter}${num}`, index: num };
 }
 
-/** ✅ Narrow the domain letter to the exact union that useQuizProgress expects */
-type DomainLetter = "A"|"B"|"C"|"D"|"E"|"F"|"G"|"H"|"I";
-function toDomainLetter(s: string): DomainLetter {
-  const L = (s?.charAt(0) ?? "A").toUpperCase();
-  return (["A","B","C","D","E","F","G","H","I"] as const).includes(L as DomainLetter)
-    ? (L as DomainLetter)
-    : "A";
+function getNextSubdomainCode(
+  domain: DomainLetter,
+  index: number
+): string | null {
+  const max = DOMAIN_COUNTS[domain];
+  if (!max) return null;
+  if (index >= max) return null;
+  return `${domain}${index + 1}`;
+}
+
+// localStorage helpers
+function setLocalProgress(
+  domain: DomainLetter,
+  code: string,
+  accuracyPercent: number
+) {
+  try {
+    const doneKey = `quiz:done:${domain}:${code}`;
+    const accKey = `quiz:accuracy:${domain}:${code}`;
+    const lastKey = `quiz:lastCode:${domain}`;
+
+    window.localStorage.setItem(doneKey, "1");
+
+    const prev = window.localStorage.getItem(accKey);
+    const prevNum = prev != null ? Number(prev) : null;
+    const best =
+      prevNum != null && Number.isFinite(prevNum)
+        ? Math.max(prevNum, accuracyPercent)
+        : accuracyPercent;
+    window.localStorage.setItem(accKey, String(best));
+
+    window.localStorage.setItem(lastKey, code);
+  } catch {
+    // ignore localStorage errors (Safari private mode, etc.)
+  }
 }
 
 /* =========================
    Component
 ========================= */
-export default function QuizRunner() {
+
+export default function QuizRunnerPage() {
   const router = useRouter();
-  const initial = isValidCode(normCode(router.query.code)) ? normCode(router.query.code) : "A1";
+  const { domain, code, index: subIndex } = useMemo(
+    () => parseCode(router.query.code),
+    [router.query.code]
+  );
 
-  // Per-domain “round” to vary server shuffle seeds
-  const [roundId, setRoundId] = useState<number>(0);
-  useEffect(() => {
-    const L = initial[0].toUpperCase();
-    const raw = typeof window !== "undefined" ? localStorage.getItem(`quiz:round:${L}`) : null;
-    const n = raw ? Number(raw) : 0;
-    setRoundId(Number.isFinite(n) ? n : 0);
-  }, [initial]);
-
-  // Auth presence (for /api/progress/*)
-  const [hasSession, setHasSession] = useState(false);
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      const { data } = await supabase.auth.getSession();
-      if (mounted) setHasSession(Boolean(data.session));
-    })();
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setHasSession(Boolean(s)));
-    return () => sub.subscription.unsubscribe();
-  }, []);
-
-  // URL / params
-  const [code, setCode] = useState(initial);
-  const letter: DomainLetter = toDomainLetter(code);           // ⬅️ narrowed type
-  const { actions } = useQuizProgress(letter, code);
-
-  // Controls
-  const [limit, setLimit] = useState(10);
-  const [shuffle, setShuffle] = useState(true);
-
-  // Data
+  const [fetchState, setFetchState] = useState<FetchState>({
+    status: "idle",
+  });
   const [items, setItems] = useState<QuizItem[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  // Single-question state
-  const [qIndex, setQIndex] = useState(0);
-  const [answers, setAnswers] = useState<Record<string, "A" | "B" | "C" | "D" | undefined>>({});
-  const [showRationales, setShowRationales] = useState<Record<string, boolean>>({});
-  const [finishMsg, setFinishMsg] = useState<string | null>(null);
+  // Quiz state
+  const [currentIdx, setCurrentIdx] = useState(0);
+  const [answeredCount, setAnsweredCount] = useState(0);
+  const [correctCount, setCorrectCount] = useState(0);
 
-  // Local subdomain snapshot (for header line)
-  const [subLocalAcc, setSubLocalAcc] = useState<number | null>(null);
-  const [subLocalDone, setSubLocalDone] = useState<boolean>(false);
+  const [selected, setSelected] = useState<ChoiceLetter | null>(null);
+  const [isAnswered, setIsAnswered] = useState(false);
+  const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
+
+  // Summary popup
+  const [showSummary, setShowSummary] = useState(false);
+
+  /* =========================
+     Fetch questions for this code
+  ========================= */
+
   useEffect(() => {
-    try {
-      const a = localStorage.getItem(`quiz:accuracy:${letter}:${code}`);
-      const d = localStorage.getItem(`quiz:done:${letter}:${code}`) === "1";
-      setSubLocalAcc(a ? Number(a) : null);
-      setSubLocalDone(d);
-    } catch {
-      setSubLocalAcc(null);
-      setSubLocalDone(false);
-    }
-  }, [code, letter]);
+    if (!domain || !code) return;
 
-  // Metrics
-  const answeredCount = useMemo(
-    () => items.reduce((acc, q) => acc + (answers[String(q.id)] ? 1 : 0), 0),
-    [items, answers]
-  );
-  const correctCount = useMemo(
-    () =>
-      items.reduce((acc, q) => {
-        const sel = normChoice(answers[String(q.id)]);
-        const ans = normChoice(q.correct_answer);
-        return acc + (sel && ans && sel === ans ? 1 : 0);
-      }, 0),
-    [items, answers]
-  );
-  const percent = items.length ? Math.round((correctCount / items.length) * 100) : 0;
-  const allAnswered = items.length > 0 && answeredCount === items.length;
+    let cancelled = false;
 
-  // Abort controller
-  const loadAbortRef = useRef<AbortController | null>(null);
-
-  async function saveProgressToAPI(opts: {
-    subdomain: string;
-    done: boolean;
-    best_accuracy?: number | null;
-    last_index?: number | null;
-  }) {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) return;
-    try {
-      await fetch("/api/progress/upsert", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          subdomain: opts.subdomain,
-          done: opts.done,
-          best_accuracy: typeof opts.best_accuracy === "number" ? opts.best_accuracy : null,
-          last_index: typeof opts.last_index === "number" ? opts.last_index : 0,
-        }),
-      });
-    } catch {
-      /* ignore */
-    }
-  }
-
-  async function load(currCode = code, currLimit = limit, doShuffle = shuffle) {
-    loadAbortRef.current?.abort();
-    const ac = new AbortController();
-    loadAbortRef.current = ac;
-
-    setLoading(true);
-    setError(null);
-    try {
-      const seed = `${letter}-${roundId}`;
-      const url1 =
-        `/api/quiz/fetch?domain=${letter}&code=${encodeURIComponent(currCode)}&limit=${currLimit}` +
-        (doShuffle ? `&shuffle=1&seed=${encodeURIComponent(seed)}` : "");
-      let res = await fetch(url1, { cache: "no-store", signal: ac.signal });
-      let parsed: any = null;
-      try {
-        parsed = await res.json();
-      } catch {
-        parsed = {};
-      }
-
-      let rows: QuizItem[] = [];
-      if (Array.isArray(parsed)) rows = parsed;
-      else if (parsed?.ok && Array.isArray(parsed.data)) rows = parsed.data;
-
-      if (!rows.length) {
-        const fb = `/api/quiz?code=${encodeURIComponent(currCode)}&limit=${currLimit}`;
-        const r2 = await fetch(fb, { cache: "no-store", signal: ac.signal });
-        const j2: any = await r2.json().catch(() => ({}));
-        if (j2?.ok && Array.isArray(j2.data)) rows = j2.data;
-      }
-      if (ac.signal.aborted) return;
-
-      if (!rows.length) {
-        setItems([]);
-        setAnswers({});
-        setShowRationales({});
-        setQIndex(0);
-        actions.setLast(currCode);
-        setError(`No questions found for ${currCode}.`);
-        return;
-      }
-
-      // Normalize correct_answer to one of A/B/C/D
-      const normalized = rows.map((r) => ({
-        ...r,
-        correct_answer: normChoice(r.correct_answer) ?? r.correct_answer,
-      }));
-
-      setItems(normalized);
-      setAnswers({});
-      setShowRationales({});
-      setQIndex(0);
-      actions.setLast(currCode);
+    async function load() {
+      setFetchState({ status: "loading" });
+      setItems([]);
+      setCurrentIdx(0);
+      setAnsweredCount(0);
+      setCorrectCount(0);
+      setSelected(null);
+      setIsAnswered(false);
+      setIsCorrect(null);
+      setShowSummary(false);
 
       try {
-        localStorage.setItem(`quiz:lastCode:${currCode[0]}`, currCode);
-        window.dispatchEvent(new Event("quiz-progress-updated"));
-      } catch {}
+        // 🔧 Build params safely (no nulls)
+        const params = new URLSearchParams();
+        if (domain) params.set("domain", domain);
+        if (code) params.set("code", code);
+        params.set("limit", String(DEFAULT_LIMIT));
+        params.set("shuffle", "1");
 
-      if (hasSession) {
-        await saveProgressToAPI({
-          subdomain: currCode,
-          done: false,
-          best_accuracy: subLocalAcc ?? null,
-          last_index: 0,
-        });
-      }
-    } catch (e: any) {
-      if (e?.name !== "AbortError") setError(e?.message || "Failed to load quiz.");
-    } finally {
-      if (!loadAbortRef.current?.signal.aborted) setLoading(false);
-    }
-  }
+        const res = await fetch(`/api/quiz/fetch?${params.toString()}`);
+        if (!res.ok) {
+          throw new Error(`Fetch failed with ${res.status}`);
+        }
+        const json = await res.json();
+        const list: QuizItem[] = Array.isArray(json?.items)
+          ? json.items
+          : json?.data ?? [];
 
-  // Initial and when code (URL) changes
-  useEffect(() => {
-    if (!router.isReady) return;
-    const raw = normCode(router.query.code);
-    const safe = isValidCode(raw) ? raw : "A1";
-    setCode(safe);
-    load(safe, limit, shuffle);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router.isReady, router.query.code]);
-
-  // Current Q
-  const current = items[qIndex];
-  const selected = current ? answers[String(current.id)] : undefined;
-  const correctKey = current ? normChoice(current.correct_answer) : undefined;
-  const isCorrect = Boolean(selected && correctKey && selected === correctKey);
-
-  // Answer handler
-  function handleSelect(qid: string, choice: "A" | "B" | "C" | "D") {
-    setAnswers((prev) => ({ ...prev, [qid]: choice }));
-    if (!current) return;
-
-    const right = normChoice(current.correct_answer);
-    if (choice === right) {
-      const next = qIndex + 1;
-      // brief delay so user sees the green state
-      setTimeout(() => {
-        if (next < items.length) setQIndex(next);
-        // last question => sticky save bar will appear
-      }, 420);
-    } else {
-      setShowRationales((prev) => ({ ...prev, [qid]: true }));
-    }
-  }
-
-  // Debounced autosave of last answered index
-  useEffect(() => {
-    if (!items.length || !hasSession) return;
-    const lastIdx = Math.max(
-      0,
-      items.reduce((last, q, i) => (answers[String(q.id)] ? i : last), -1)
-    );
-    const run = debounce(async () => {
-      await saveProgressToAPI({
-        subdomain: code,
-        done: false,
-        best_accuracy: subLocalAcc ?? null,
-        last_index: lastIdx,
-      });
-    }, 700);
-    run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [answers, items, hasSession, code]);
-
-  // Finish & auto-advance to next subdomain (or domain overview if end)
-  async function finishSubdomain() {
-    try {
-      localStorage.setItem(`quiz:lastCode:${letter}`, code);
-      localStorage.setItem(`quiz:done:${letter}:${code}`, "1");
-      localStorage.setItem(`quiz:accuracy:${letter}:${code}`, String(percent));
-      window.dispatchEvent(new Event("quiz-progress-updated"));
-      setSubLocalAcc(percent);
-      setSubLocalDone(true);
-    } catch {}
-
-    actions.markDone();
-    actions.setAccuracy(percent);
-
-    if (hasSession) {
-      await saveProgressToAPI({
-        subdomain: code,
-        done: true,
-        best_accuracy: percent,
-        last_index: Math.max(0, (items?.length ?? 1) - 1),
-      });
-    }
-
-    setFinishMsg(`Saved ${code} • ${percent}%`);
-    setTimeout(() => setFinishMsg(null), 1200);
-
-    const nxt = nextCode(code);
-    if (nxt) {
-      router.replace({ pathname: "/quiz/runner", query: { code: nxt } });
-    } else {
-      // End of domain → go to single-page TOC
-      router.replace({ pathname: "/quiz" });
-    }
-  }
-
-  // Keyboard shortcuts: 1–4 answer, N to advance on wrong/after viewing
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!current) return;
-      const map: Record<string, "A" | "B" | "C" | "D"> = {
-        "1": "A",
-        "2": "B",
-        "3": "C",
-        "4": "D",
-      };
-      if (map[e.key]) {
-        e.preventDefault();
-        handleSelect(String(current.id), map[e.key]);
-      } else if (e.key.toLowerCase() === "n") {
-        // advance manually when wrong or after viewing rationales
-        if (selected && selected !== correctKey) {
-          setQIndex((i) => Math.min(items.length - 1, i + 1));
+        if (!cancelled) {
+          setItems(list);
+          setFetchState({ status: "loaded" });
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setFetchState({
+            status: "error",
+            message: err?.message || "Error loading questions.",
+          });
         }
       }
+    }
+
+    load();
+
+    return () => {
+      cancelled = true;
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current, selected, correctKey, items.length]);
+  }, [domain, code]);
 
-  // UI helpers
-  const progressPercent = items.length ? Math.round((answeredCount / items.length) * 100) : 0;
-  const correctSoFarPercent = items.length ? Math.round((correctCount / items.length) * 100) : 0;
+  /* =========================
+     Derived values
+  ========================= */
 
-  // Domain/subdomain presentation text
-  const domainTitle = getDomainTitle(letter);
-  const subdomainText = getSubdomainText(code);
+  const totalQuestions = items.length;
+  const current = items[currentIdx] ?? null;
+
+  const accuracyPercent =
+    answeredCount > 0 ? Math.round((correctCount / answeredCount) * 100) : 0;
+
+  const domainTitle =
+    (domain && getDomainTitle(domain)) ?? (domain ? `Domain ${domain}` : "");
+
+  const subTitle = code ? getSubdomainText(code) ?? code : "";
+
+  /* =========================
+     Handlers
+  ========================= */
+
+  function handleAnswer(choice: ChoiceLetter) {
+    if (!current || isAnswered) return; // don’t double-answer
+
+    const correctChoice = (current.correct_answer || "").toUpperCase() as
+      | "A"
+      | "B"
+      | "C"
+      | "D";
+    const correct = choice === correctChoice;
+
+    setSelected(choice);
+    setIsAnswered(true);
+    setIsCorrect(correct);
+    setAnsweredCount((n) => n + 1);
+    if (correct) {
+      setCorrectCount((n) => n + 1);
+    }
+  }
+
+  function handleNextQuestion() {
+    if (!isAnswered) return;
+    if (currentIdx + 1 < totalQuestions) {
+      setCurrentIdx((i) => i + 1);
+      setSelected(null);
+      setIsAnswered(false);
+      setIsCorrect(null);
+    } else {
+      // End of subdomain: store progress and show summary popup
+      if (domain && code) {
+        setLocalProgress(domain, code, accuracyPercent);
+      }
+      setShowSummary(true);
+    }
+  }
+
+  function handleBackToToc() {
+    router.push("/quiz");
+  }
+
+  function handleNextSubdomain() {
+    if (!domain || subIndex == null) {
+      router.push("/quiz");
+      return;
+    }
+    const nextCode = getNextSubdomainCode(domain, subIndex);
+    if (!nextCode) {
+      // No more subdomains in this domain; go back to TOC
+      router.push("/quiz");
+      return;
+    }
+    router.push({
+      pathname: "/quiz/runner",
+      query: { code: nextCode },
+    });
+  }
+
+  /* =========================
+     Rationale rendering
+  ========================= */
+
+  function renderRationales() {
+    if (!current || !isAnswered || !selected) return null;
+
+    const choiceKey = `rationale_${selected.toLowerCase()}` as
+      | "rationale_a"
+      | "rationale_b"
+      | "rationale_c"
+      | "rationale_d";
+
+    const selectedRationale = (current as any)[choiceKey] as
+      | string
+      | null
+      | undefined;
+
+    const generic = current.rationale_correct;
+
+    return (
+      <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-blue-900">
+        <p className="mb-1 font-semibold">
+          You chose option {selected}.{" "}
+          {isCorrect ? "That is correct. 🎉" : "That is not correct."}
+        </p>
+        {generic && (
+          <p className="mb-1 whitespace-pre-line">
+            {generic}
+          </p>
+        )}
+        {selectedRationale && (
+          <p className="mt-1 text-xs text-blue-900/80 whitespace-pre-line">
+            Option {selected}: {selectedRationale}
+          </p>
+        )}
+      </div>
+    );
+  }
 
   /* =========================
      Render
-  ========================= */
+  ========================== */
+
+  if (!domain || !code) {
+    return (
+      <main className="mx-auto max-w-3xl px-4 py-8">
+        <h1 className="text-2xl font-semibold mb-2">Quiz</h1>
+        <p className="text-sm text-gray-600">
+          No subdomain code was provided. Please go back to the quiz table of
+          contents and choose a subdomain.
+        </p>
+        <button
+          onClick={handleBackToToc}
+          className="mt-4 rounded-md border px-4 py-2 text-sm"
+        >
+          Back to TOC
+        </button>
+      </main>
+    );
+  }
+
+  if (fetchState.status === "loading" || fetchState.status === "idle") {
+    return (
+      <main className="mx-auto max-w-3xl px-4 py-8">
+        <p className="text-sm text-gray-600">Loading questions…</p>
+      </main>
+    );
+  }
+
+  if (fetchState.status === "error") {
+    return (
+      <main className="mx-auto max-w-3xl px-4 py-8">
+        <h1 className="text-2xl font-semibold mb-2">Quiz</h1>
+        <p className="text-sm text-red-600 mb-3">
+          {fetchState.message || "Error loading questions."}
+        </p>
+        <button
+          onClick={handleBackToToc}
+          className="mt-2 rounded-md border px-4 py-2 text-sm"
+        >
+          Back to TOC
+        </button>
+      </main>
+    );
+  }
+
+  if (!current || totalQuestions === 0) {
+    return (
+      <main className="mx-auto max-w-3xl px-4 py-8">
+        <h1 className="text-2xl font-semibold mb-2">Quiz</h1>
+        <p className="text-sm text-gray-600">
+          No questions were found for {code}. Please choose another subdomain.
+        </p>
+        <button
+          onClick={handleBackToToc}
+          className="mt-4 rounded-md border px-4 py-2 text-sm"
+        >
+          Back to TOC
+        </button>
+      </main>
+    );
+  }
+
+  const questionNumber = currentIdx + 1;
+
   return (
-    <main className="mx-auto max-w-3xl px-4 py-8">
-      {/* Header with Domain/Subdomain text */}
-      <header className="mb-6">
-        <div className="flex items-end justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold">Quiz</h1>
-            <div className="mt-1 text-sm text-gray-600">
-              <span className="uppercase tracking-wide">Domain {letter}</span>
-              {domainTitle && <span> · {domainTitle}</span>}
-              <span className="mx-1 text-gray-400">•</span>
-              Subdomain <strong>{code}</strong>
-              <span className="mx-1 text-gray-400">•</span>
-              {subLocalDone ? "✅ Completed" : "Not completed"} · Accuracy{" "}
-              <strong>{subLocalAcc != null ? `${subLocalAcc}%` : "—"}</strong>
+    <main className="relative mx-auto max-w-3xl px-4 py-8">
+      {/* Summary popup */}
+      {showSummary && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-lg">
+            <h2 className="text-xl font-semibold mb-1">
+              Subdomain complete – {code}
+            </h2>
+            <p className="text-sm text-gray-600 mb-3">
+              Great work! Here’s how you did this round.
+            </p>
+            <div className="mb-4 rounded-lg border bg-gray-50 p-3 text-sm">
+              <p>
+                Correct:{" "}
+                <span className="font-semibold">
+                  {correctCount} / {answeredCount}
+                </span>
+              </p>
+              <p>
+                Accuracy:{" "}
+                <span className="font-semibold">{accuracyPercent}%</span>
+              </p>
             </div>
-            {subdomainText && (
-              <p className="mt-2 text-sm text-gray-700">{subdomainText}</p>
-            )}
+            <div className="flex flex-wrap gap-2 justify-end">
+              <button
+                onClick={handleBackToToc}
+                className="rounded-md border px-3 py-1.5 text-sm"
+              >
+                Back to TOC
+              </button>
+              <button
+                onClick={handleNextSubdomain}
+                className="rounded-md border bg-black px-3 py-1.5 text-sm font-semibold text-white"
+              >
+                Next subdomain
+              </button>
+            </div>
           </div>
-          <a href="/quiz" className="text-sm underline underline-offset-2 hover:opacity-80">
-            ← Back to TOC
-          </a>
         </div>
+      )}
+
+      {/* Header */}
+      <header className="mb-6">
+        <button
+          onClick={handleBackToToc}
+          className="mb-2 text-sm text-blue-700 underline-offset-2 hover:underline"
+        >
+          ← Back to TOC
+        </button>
+
+        <h1 className="text-3xl font-semibold mb-1">Quiz</h1>
+        <p className="text-sm text-gray-700">
+          <span className="font-semibold uppercase tracking-wide">
+            DOMAIN {domain}
+          </span>{" "}
+          {domainTitle && <>· {domainTitle}</>} ·{" "}
+          <span className="font-semibold">Subdomain {code}</span>
+        </p>
+        {subTitle && (
+          <p className="mt-1 text-sm text-gray-600">{subTitle}</p>
+        )}
       </header>
 
-      {/* Progress & controls */}
-      <section className="mb-5 rounded-lg border p-3">
-        <div className="mb-2 flex items-center justify-between text-sm">
+      {/* Progress bar */}
+      <section className="mb-5 rounded-lg border p-3 text-sm">
+        <div className="flex items-center justify-between">
           <div>
             <span className="font-medium">Progress</span>{" "}
             <span className="text-gray-600">
-              • Answered <strong>{answeredCount}</strong> / {items.length}
-              {items.length > 0 && (
-                <>
-                  {" "}
-                  <span className="mx-1 text-gray-400">•</span> Question <strong>{qIndex + 1}</strong> of {items.length}
-                </>
-              )}
+              · Answered {answeredCount} / {totalQuestions} · Question{" "}
+              {questionNumber} of {totalQuestions}
             </span>
           </div>
           <div className="text-xs text-gray-500">
-            Correct so far: <strong>{correctSoFarPercent}%</strong>
+            Correct so far: {accuracyPercent}%
           </div>
         </div>
-
-        <div className="h-2 w-full overflow-hidden rounded bg-gray-200">
-          <div className="h-2 rounded bg-blue-500 transition-all" style={{ width: `${progressPercent}%` }} />
-        </div>
-        <div className="mt-2 h-1 w-full overflow-hidden rounded bg-gray-100">
-          <div className="h-1 rounded bg-green-500 transition-all" style={{ width: `${correctSoFarPercent}%` }} />
-        </div>
-
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <label className="text-sm">
-            Code
-            <select
-              className="ml-2 rounded border px-2 py-1"
-              value={code}
-              onChange={(e) => router.replace({ pathname: "/quiz/runner", query: { code: e.target.value } })}
-            >
-              {SUBDOMAIN_CODES.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="text-sm">
-            Limit
-            <input
-              type="number"
-              min={1}
-              max={50}
-              className="ml-2 w-20 rounded border px-2 py-1"
-              value={limit}
-              onChange={(e) => setLimit(clamp(Number(e.target.value) || 1, 1, 50))}
-            />
-          </label>
-
-          <button
-            type="button"
-            onClick={() => load(code, limit, shuffle)}
-            disabled={loading}
-            className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-gray-50"
-          >
-            {loading ? "Loading…" : "Load"}
-          </button>
-
-          <label className="ml-auto inline-flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              checked={shuffle}
-              onChange={(e) => {
-                setShuffle(e.target.checked);
-                load(code, limit, e.target.checked);
-              }}
-            />
-            Shuffle
-          </label>
+        <div className="mt-2 h-2 w-full overflow-hidden rounded bg-gray-200">
+          <div
+            className="h-2 rounded bg-blue-500 transition-all"
+            style={{
+              width: `${totalQuestions ? (answeredCount / totalQuestions) * 100 : 0}%`,
+            }}
+          />
         </div>
       </section>
 
-      {finishMsg && (
-        <div className="mb-3 rounded-md border border-green-200 bg-green-50 p-2 text-sm text-green-700">
-          {finishMsg}
-        </div>
-      )}
-
-      {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-red-700">Error: {error}</div>}
-
-      {!error && !loading && items.length === 0 && (
-        <div className="rounded-md border p-3 text-sm">
-          <p className="text-gray-700">
-            No questions found for <strong>{code}</strong>.
+      {/* Question */}
+      <section className="rounded-lg border bg-white p-4 shadow-sm">
+        {current.statement && (
+          <p className="mb-3 text-sm text-gray-700 whitespace-pre-line">
+            {current.statement}
           </p>
+        )}
+        <p className="mb-4 text-base font-medium text-gray-900 whitespace-pre-line">
+          {current.question}
+        </p>
+
+        {/* Choices */}
+        <div className="space-y-2">
+          {(["A", "B", "C", "D"] as ChoiceLetter[]).map((letter) => {
+            const key = letter.toLowerCase() as "a" | "b" | "c" | "d";
+            const text = (current as any)[key] as string;
+            const isSelected = selected === letter;
+            const isCorrectChoice =
+              (current.correct_answer || "").toUpperCase() === letter;
+
+            let borderClass = "border-gray-300";
+            let bgClass = "bg-white";
+            if (isAnswered && isSelected) {
+              borderClass = isCorrect ? "border-green-500" : "border-red-500";
+              bgClass = isCorrect ? "bg-green-50" : "bg-red-50";
+            } else if (isAnswered && isCorrectChoice) {
+              borderClass = "border-green-400";
+            }
+
+            return (
+              <button
+                key={letter}
+                type="button"
+                onClick={() => handleAnswer(letter)}
+                disabled={isAnswered}
+                className={`flex w-full items-start gap-2 rounded-md border px-3 py-2 text-left text-sm transition ${
+                  isAnswered ? "cursor-default" : "hover:bg-gray-50"
+                } ${borderClass} ${bgClass}`}
+              >
+                <span className="mt-0.5 inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border text-xs font-semibold">
+                  {letter}
+                </span>
+                <span className="whitespace-pre-line">{text}</span>
+              </button>
+            );
+          })}
         </div>
-      )}
 
-      {/* Single question */}
-      {current && (
-        <div className="rounded-lg border p-4">
-          <div className="mb-3 flex items-center justify-between text-xs">
-            <div className="text-gray-500">
-              Question {qIndex + 1} of {items.length}
-            </div>
-            {selected && (
-              <div className={"font-semibold " + (isCorrect ? "text-green-600" : "text-red-600")}>
-                {isCorrect ? "Correct" : `Incorrect (Answer: ${normChoice(current.correct_answer)})`}
-              </div>
-            )}
-          </div>
+        {/* Rationale */}
+        {renderRationales()}
 
-          {current.statement && <p className="mb-2 italic text-gray-700">{current.statement}</p>}
-          <p className="mb-3 font-medium">{String(current.question ?? "").replace(/^\s*\d+\.\s*/, "")}</p>
-
-          <div role="radiogroup" className="space-y-2">
-            {(["A", "B", "C", "D"] as const).map((k) => {
-              const txt = (current as any)[k.toLowerCase()];
-              const chosen = selected === k;
-              const right = normChoice(current.correct_answer);
-              const borderClass =
-                (selected &&
-                  ((k === right && "border-green-400") || (chosen && k !== right && "border-red-300"))) ||
-                "border-gray-200";
-              return (
-                <label
-                  key={k}
-                  className={
-                    "flex cursor-pointer items-start gap-2 rounded-md border p-2 transition " +
-                    borderClass +
-                    " hover:bg-gray-50"
-                  }
-                >
-                  <input
-                    type="radio"
-                    name={`q-${String(current.id)}`}
-                    value={k}
-                    checked={chosen}
-                    onChange={() => handleSelect(String(current.id), k)}
-                    className="mt-1"
-                  />
-                  <span>
-                    <span className="mr-1 font-semibold">{k}.</span>
-                    {txt}
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-
-          {/* Wrong answer helpers */}
-          {selected && !isCorrect && (
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() =>
-                  setShowRationales((prev) => ({ ...prev, [String(current.id)]: !prev[String(current.id)] }))
-                }
-                className="text-sm underline underline-offset-2 hover:opacity-80"
-              >
-                {showRationales[String(current.id)] ? "Hide rationales" : "Show rationales"}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setQIndex((i) => Math.min(items.length - 1, i + 1))}
-                className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50"
-                title="Next question"
-              >
-                Next question →
-              </button>
-            </div>
-          )}
-
-          {showRationales[String(current.id)] && (
-            <div className="mt-3 rounded-md bg-gray-50 p-3 text-sm">
-              <p className="mb-2">
-                <span className="font-semibold">Why the correct answer is correct:</span>{" "}
-                {current.rationale_correct || "—"}
-              </p>
-              <ul className="space-y-1">
-                {(["A", "B", "C", "D"] as const).map((k) => (
-                  <li key={k}>
-                    <span className="font-semibold">{k}:</span>{" "}
-                    {(current as any)[`rationale_${k.toLowerCase()}`] ?? "—"}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+        {/* Next button */}
+        <div className="mt-4 flex justify-end">
+          <button
+            type="button"
+            onClick={handleNextQuestion}
+            disabled={!isAnswered}
+            className="rounded-md border bg-black px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {currentIdx + 1 < totalQuestions ? "Next question" : "Finish subdomain"}
+          </button>
         </div>
-      )}
-
-      {/* Sticky results bar */}
-      {allAnswered && (
-        <div className="fixed bottom-4 left-1/2 z-40 w-[95%] max-w-2xl -translate-x-1/2 rounded-xl border bg-white/95 p-4 shadow-lg backdrop-blur">
-          <div className="flex items-center justify-between">
-            <div className="text-sm">
-              <div className="font-medium">You’re done!</div>
-              <div>
-                Score: <strong>{correctCount}</strong> / {items.length} ({percent}%)
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={finishSubdomain}
-                className="rounded-md border bg-black px-3 py-1.5 text-sm text-white hover:opacity-90"
-                title="Save your score and go to the next subdomain or TOC"
-              >
-                {nextCode(code) ? `Save & Next (${nextCode(code)})` : `Save & TOC`}
-              </button>
-              <button
-                type="button"
-                onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-                className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50"
-                title="Scroll to review your answers"
-              >
-                Review answers
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      </section>
     </main>
   );
 }

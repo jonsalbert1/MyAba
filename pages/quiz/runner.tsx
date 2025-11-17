@@ -238,6 +238,30 @@ export default function QuizRunnerPage() {
     }
   }
 
+  async function saveProgressToServer(
+    domain: DomainLetter,
+    code: string,
+    accuracy: number,
+    correct: number,
+    answered: number
+  ) {
+    try {
+      await fetch("/api/quiz/progress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          domain,
+          subdomain_code: code,
+          accuracy,
+          correct,
+          answered,
+        }),
+      });
+    } catch (err) {
+      console.warn("Failed to save quiz progress", err);
+    }
+  }
+
   function handleNextQuestion() {
     if (!isAnswered) return;
     if (currentIdx + 1 < totalQuestions) {
@@ -246,8 +270,20 @@ export default function QuizRunnerPage() {
       setIsAnswered(false);
       setIsCorrect(null);
     } else {
+      // End of subdomain: store progress locally, and if signed in, in Supabase
       if (domain && code) {
         setLocalProgress(domain, code, accuracyPercent);
+        // user check is optional here since the API is auth-protected,
+        // but it avoids an unnecessary 401 call.
+        if (user) {
+          saveProgressToServer(
+            domain,
+            code,
+            accuracyPercent,
+            correctCount,
+            answeredCount
+          );
+        }
       }
       setShowSummary(true);
     }
@@ -421,7 +457,7 @@ export default function QuizRunnerPage() {
       {/* Summary popup */}
       {showSummary && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-md rounded-xl bg.white p-6 shadow-lg bg-white">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-lg">
             <h2 className="text-xl font-semibold mb-1">
               Subdomain complete – {code}
             </h2>

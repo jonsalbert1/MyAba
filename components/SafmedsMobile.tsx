@@ -14,6 +14,7 @@ type Attempt = {
   incorrect: number;
   total: number;
   accuracy_pct: number;
+  ordinal_today: number; // 1–N within the day
 };
 
 interface SafmedsMobileProps {
@@ -61,6 +62,9 @@ function endOfToday(): Date {
   e.setDate(s.getDate() + 1);
   return e;
 }
+
+// Daily target (your “5 sessions per day” goal)
+const DAILY_TARGET = 5;
 
 /* =========================
    Component
@@ -110,11 +114,6 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
 
   // For UI feedback when not authenticated / session expired
   const [authWarning, setAuthWarning] = useState<string | null>(null);
-
-  // Daily goal
-  const runsToday = attempts.length;
-  const goal = 5;
-  const goalReached = runsToday >= goal;
 
   /* =========================
      Load cards from API
@@ -228,7 +227,12 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
 
       if (error) throw error;
 
-      const mapped: Attempt[] = (data ?? []).map((v: any) => {
+      // Stable sort by time, then assign ordinal_today = 1..N
+      const sorted = (data ?? []).slice().sort((a: any, b: any) => {
+        return new Date(a.run_started_at).getTime() - new Date(b.run_started_at).getTime();
+      });
+
+      const mapped: Attempt[] = sorted.map((v: any, idx: number) => {
         const c = Number(v.correct ?? 0);
         const ic = Number(v.incorrect ?? 0);
         const tot = c + ic;
@@ -239,6 +243,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
           incorrect: ic,
           total: tot,
           accuracy_pct: tot ? Math.round((c / tot) * 100) : 0,
+          ordinal_today: idx + 1,
         };
       });
 
@@ -364,6 +369,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
   ========================= */
   function exportCSV() {
     const headers = [
+      "run_number_today",
       "timestamp_iso",
       "duration_s",
       "correct",
@@ -373,6 +379,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
     ];
     const rows = attempts.map((a) =>
       [
+        a.ordinal_today,
         JSON.stringify(a.timestampISO),
         a.duration_s,
         a.correct,
@@ -489,6 +496,15 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
   }
 
   /* =========================
+     Derived: daily target
+  ========================= */
+  const runsToday = attempts.length;
+  const targetPercent = Math.min(
+    100,
+    Math.round((runsToday / DAILY_TARGET) * 100),
+  );
+
+  /* =========================
      Render
   ========================= */
   const current = cards[index];
@@ -554,6 +570,28 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
           <div className="mt-1 w-full rounded-xl border px-3 py-2 text-sm text-gray-700">
             {deckName || "(admin-controlled)"}
           </div>
+        </div>
+      </section>
+
+      {/* Daily target indicator */}
+      <section className="mb-3 rounded-xl border bg-white p-3 text-xs text-gray-700">
+        <div className="flex items-center justify-between">
+          <span>
+            Daily SAFMEDS goal:{" "}
+            <strong>
+              {runsToday} / {DAILY_TARGET}
+            </strong>{" "}
+            runs
+          </span>
+          <span className="text-[11px] text-gray-500">
+            Extra runs still saved after {DAILY_TARGET}
+          </span>
+        </div>
+        <div className="mt-2 h-1.5 w-full overflow-hidden rounded bg-gray-200">
+          <div
+            className="h-1.5 rounded bg-blue-500 transition-all"
+            style={{ width: `${targetPercent}%` }}
+          />
         </div>
       </section>
 
@@ -672,15 +710,8 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
       <section className="mb-4 rounded-2xl border p-3">
         <div className="mb-2 flex items-center justify-between">
           <h3 className="text-sm font-semibold">Today’s attempts</h3>
-          <div className="text-xs text-gray-500 flex items-center gap-1">
-            <span>
-              {runsToday} / {goal} runs
-            </span>
-            {goalReached && (
-              <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-[1px] text-[10px] font-semibold text-green-800">
-                Goal met 🎉
-              </span>
-            )}
+          <div className="text-xs text-gray-500">
+            {attempts.length} run(s)
           </div>
         </div>
         <div className="w-full rounded-xl border bg-white">
@@ -704,6 +735,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
           <table className="min-w-full text-left text-xs">
             <thead className="text-gray-500">
               <tr>
+                <th className="px-2 py-1">Run #</th>
                 <th className="px-2 py-1">Time</th>
                 <th className="px-2 py-1">✓</th>
                 <th className="px-2 py-1">✕</th>
@@ -715,6 +747,9 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
             <tbody>
               {attempts.slice(-5).reverse().map((r, i) => (
                 <tr key={i} className="border-t">
+                  <td className="px-2 py-1 tabular-nums">
+                    {r.ordinal_today}
+                  </td>
                   <td className="px-2 py-1">
                     {new Date(r.timestampISO).toLocaleTimeString()}
                   </td>
@@ -732,7 +767,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
               {attempts.slice(-5).length === 0 && (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={7}
                     className="px-2 py-3 text-center text-gray-500"
                   >
                     No runs yet today

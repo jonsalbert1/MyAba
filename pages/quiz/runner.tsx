@@ -1,6 +1,7 @@
 // pages/quiz/runner.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
+import { useUser } from "@supabase/auth-helpers-react";
 import { getDomainTitle, getSubdomainText } from "@/lib/tco";
 
 /* =========================
@@ -106,7 +107,7 @@ function setLocalProgress(
 
     window.localStorage.setItem(lastKey, code);
   } catch {
-    // ignore localStorage errors (Safari private mode, etc.)
+    // ignore localStorage errors
   }
 }
 
@@ -116,6 +117,7 @@ function setLocalProgress(
 
 export default function QuizRunnerPage() {
   const router = useRouter();
+  const user = useUser();
   const { domain, code, index: subIndex } = useMemo(
     () => parseCode(router.query.code),
     [router.query.code]
@@ -139,11 +141,13 @@ export default function QuizRunnerPage() {
   const [showSummary, setShowSummary] = useState(false);
 
   /* =========================
-     Fetch questions for this code
+     Fetch questions for this code (only if signed in)
   ========================= */
 
   useEffect(() => {
     if (!domain || !code) return;
+    if (user === undefined) return; // still hydrating
+    if (!user) return; // not signed in, don't fetch
 
     let cancelled = false;
 
@@ -159,12 +163,12 @@ export default function QuizRunnerPage() {
       setShowSummary(false);
 
       try {
-        // 🔧 Build params safely (no nulls)
-        const params = new URLSearchParams();
-        if (domain) params.set("domain", domain);
-        if (code) params.set("code", code);
-        params.set("limit", String(DEFAULT_LIMIT));
-        params.set("shuffle", "1");
+        const params = new URLSearchParams({
+          domain: domain || "",
+          code: code || "",
+          limit: String(DEFAULT_LIMIT),
+          shuffle: "1",
+        });
 
         const res = await fetch(`/api/quiz/fetch?${params.toString()}`);
         if (!res.ok) {
@@ -194,11 +198,11 @@ export default function QuizRunnerPage() {
     return () => {
       cancelled = true;
     };
-  }, [domain, code]);
+  }, [domain, code, user]);
 
   /* =========================
      Derived values
-  ========================= */
+  ========================== */
 
   const totalQuestions = items.length;
   const current = items[currentIdx] ?? null;
@@ -216,7 +220,7 @@ export default function QuizRunnerPage() {
   ========================= */
 
   function handleAnswer(choice: ChoiceLetter) {
-    if (!current || isAnswered) return; // don’t double-answer
+    if (!current || isAnswered) return;
 
     const correctChoice = (current.correct_answer || "").toUpperCase() as
       | "A"
@@ -242,7 +246,6 @@ export default function QuizRunnerPage() {
       setIsAnswered(false);
       setIsCorrect(null);
     } else {
-      // End of subdomain: store progress and show summary popup
       if (domain && code) {
         setLocalProgress(domain, code, accuracyPercent);
       }
@@ -261,7 +264,6 @@ export default function QuizRunnerPage() {
     }
     const nextCode = getNextSubdomainCode(domain, subIndex);
     if (!nextCode) {
-      // No more subdomains in this domain; go back to TOC
       router.push("/quiz");
       return;
     }
@@ -312,8 +314,8 @@ export default function QuizRunnerPage() {
   }
 
   /* =========================
-     Render
-  ========================== */
+     Auth gating views
+  ========================= */
 
   if (!domain || !code) {
     return (
@@ -332,6 +334,43 @@ export default function QuizRunnerPage() {
       </main>
     );
   }
+
+  if (user === undefined) {
+    return (
+      <main className="mx-auto max-w-3xl px-4 py-8">
+        <p className="text-sm text-gray-600">Checking your session…</p>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="mx-auto max-w-3xl px-4 py-8">
+        <h1 className="text-2xl font-semibold mb-2">Quiz</h1>
+        <p className="text-sm text-gray-700 mb-3">
+          You must be signed in to take quizzes and track your progress.
+        </p>
+        <div className="flex gap-2">
+          <button
+            onClick={() => router.push("/login")}
+            className="rounded-md border bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+          >
+            Sign in
+          </button>
+          <button
+            onClick={handleBackToToc}
+            className="rounded-md border px-4 py-2 text-sm"
+          >
+            Back to Quiz home
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  /* =========================
+     Error / empty / main view
+  ========================= */
 
   if (fetchState.status === "loading" || fetchState.status === "idle") {
     return (
@@ -382,7 +421,7 @@ export default function QuizRunnerPage() {
       {/* Summary popup */}
       {showSummary && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-lg">
+          <div className="w-full max-w-md rounded-xl bg.white p-6 shadow-lg bg-white">
             <h2 className="text-xl font-semibold mb-1">
               Subdomain complete – {code}
             </h2>
@@ -459,7 +498,9 @@ export default function QuizRunnerPage() {
           <div
             className="h-2 rounded bg-blue-500 transition-all"
             style={{
-              width: `${totalQuestions ? (answeredCount / totalQuestions) * 100 : 0}%`,
+              width: `${
+                totalQuestions ? (answeredCount / totalQuestions) * 100 : 0
+              }%`,
             }}
           />
         </div>
@@ -524,7 +565,9 @@ export default function QuizRunnerPage() {
             disabled={!isAnswered}
             className="rounded-md border bg-black px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {currentIdx + 1 < totalQuestions ? "Next question" : "Finish subdomain"}
+            {currentIdx + 1 < totalQuestions
+              ? "Next question"
+              : "Finish subdomain"}
           </button>
         </div>
       </section>

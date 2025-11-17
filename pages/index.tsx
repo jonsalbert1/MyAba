@@ -15,6 +15,7 @@ export default function Home() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [needsProfile, setNeedsProfile] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -26,13 +27,17 @@ export default function Home() {
 
       setUser(u);
 
-      if (!u) return;
+      if (!u) {
+        setProfile(null);
+        setNeedsProfile(false);
+        return;
+      }
 
-      const { data: p, error: pErr } = await supabase
+      const { data: pRaw, error: pErr } = await supabase
         .from("profiles")
         .select("first_name, last_name")
         .eq("id", u.id)
-        .maybeSingle<Profile>(); // 👈 tell TS what this row looks like
+        .maybeSingle();
 
       if (cancelled) return;
 
@@ -40,14 +45,12 @@ export default function Home() {
         console.error("Home profile load error", pErr);
       }
 
-      setProfile(p ?? null);
+      const p = (pRaw ?? null) as Profile | null;
+      setProfile(p);
 
-      // Optional: if they’re logged in but missing name, send to profile page
-      const first = p?.first_name?.trim() ?? "";
-      const last = p?.last_name?.trim() ?? "";
-      if (!first || !last) {
-        router.push("/auth/profile");
-      }
+      const first = (p?.first_name ?? "").trim();
+      const last = (p?.last_name ?? "").trim();
+      setNeedsProfile(!first || !last);
     }
 
     loadUserAndProfile();
@@ -79,10 +82,23 @@ export default function Home() {
         <h1 className="text-3xl md:text-5xl font-semibold tracking-tight text-blue-900">
           {greeting}
         </h1>
-        <p className="mt-2 mb-10 text-gray-600">
+        <p className="mt-2 mb-6 text-gray-600">
           Choose a section to get started.
         </p>
 
+        {user && needsProfile && (
+          <div className="mb-6 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            It looks like your profile is missing your name.{" "}
+            <button
+              onClick={() => router.push("/auth/profile")}
+              className="font-semibold underline underline-offset-2"
+            >
+              Add your name now
+            </button>
+          </div>
+        )}
+
+        {/* Main tiles */}
         <div className="grid gap-6 md:grid-cols-3">
           <Link
             href="/flashcards"

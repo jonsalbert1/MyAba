@@ -1,10 +1,14 @@
 // components/UserMenu.tsx
 import { useEffect, useState } from "react";
-import { useRouter } from "next/router";
 import Link from "next/link";
 import { useSupabaseClient, useUser } from "@supabase/auth-helpers-react";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
-// Admin emails from env
+// Optional: strongly type the profile row
+type ProfileRow = {
+  first_name: string | null;
+};
+
 const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS ?? "")
   .split(",")
   .map((e) => e.trim().toLowerCase())
@@ -16,13 +20,13 @@ function isAdminEmail(email: string | null | undefined) {
 }
 
 export default function UserMenu() {
-  const router = useRouter();
-  const supabase = useSupabaseClient();
-  const user = useUser(); // comes from SessionContextProvider
-  const [firstName, setFirstName] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const supabase = useSupabaseClient<SupabaseClient>();
+  const user = useUser();
 
-  // Load first_name from profiles for greeting
+  const [firstName, setFirstName] = useState<string | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(false);
+
+  // Load first_name from profiles when we have a user
   useEffect(() => {
     let cancelled = false;
 
@@ -32,89 +36,81 @@ export default function UserMenu() {
         return;
       }
 
-      setLoading(true);
-      try {
-        const { data, error } = await supabase
-          .from("profiles")
-          .select("first_name")
-          .eq("id", user.id)
-          .maybeSingle();
+      setLoadingProfile(true);
 
-        if (!cancelled) {
-          if (!error) {
-            setFirstName(data?.first_name ?? null);
-          } else {
-            console.warn("UserMenu profile load error", error);
-            setFirstName(null);
-          }
-        }
-      } catch (e) {
-        if (!cancelled) {
-          console.warn("UserMenu profile load exception", e);
-          setFirstName(null);
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("first_name")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (cancelled) return;
+
+      if (error) {
+        console.error("UserMenu profile load error", error);
       }
+
+      const row = (data as ProfileRow | null) ?? null;
+      setFirstName(row?.first_name ?? null);
+      setLoadingProfile(false);
     }
 
     loadProfile();
+
     return () => {
       cancelled = true;
     };
-  }, [supabase, user]);
+  }, [supabase, user?.id]);
 
   const displayName =
     firstName && firstName.trim().length > 0
       ? `Hi, ${firstName.trim()}`
-      : user?.email ?? "";
+      : user?.email ?? null;
 
-  const isAdmin = isAdminEmail(user?.email);
+  const admin = isAdminEmail(user?.email);
 
   async function handleSignOut() {
-    try {
-      await supabase.auth.signOut();
-    } catch (e) {
-      console.warn("Sign out error", e);
-    } finally {
-      router.push("/");
-    }
+    await supabase.auth.signOut();
+    window.location.href = "/";
   }
 
-  function handleSignIn() {
-    router.push("/login");
-  }
-
-  // Not signed in → show Sign in
-  if (!user) {
+  // -------------------------------
+  // Render
+  // -------------------------------
+  if (user === null) {
+    // Signed OUT
     return (
-      <button
-        type="button"
-        onClick={handleSignIn}
-        className="rounded-md border px-3 py-1 text-sm"
+      <Link
+        href="/login"
+        className="rounded-md border px-3 py-1 text-sm flex items-center"
       >
         Sign in
-      </button>
+      </Link>
     );
   }
 
-  // Signed in → greeting, optional Admin, and Sign out
+  if (user === undefined) {
+    // Hydrating / checking session
+    return <span className="text-sm text-gray-600">Loading…</span>;
+  }
+
+  // Signed IN
   return (
     <div className="flex items-center gap-3 text-sm">
-      {loading ? (
-        <span className="text-gray-500">Loading…</span>
-      ) : (
-        displayName && <span className="text-gray-700">{displayName}</span>
-      )}
-
-      {isAdmin && (
-        <Link href="/admin" className="text-blue-600 hover:underline">
+      {admin && (
+        <Link
+          href="/admin"
+          className="rounded-md border border-blue-500 px-2 py-0.5 text-xs font-semibold text-blue-700"
+        >
           Admin
         </Link>
       )}
 
+      <span className="text-gray-700">
+        {loadingProfile ? "Hi…" : displayName ?? "Hi there"}
+      </span>
+
       <button
-        type="button"
         onClick={handleSignOut}
         className="rounded-md border px-3 py-1 text-sm"
       >

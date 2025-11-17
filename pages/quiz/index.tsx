@@ -1,6 +1,8 @@
 // pages/quiz/index.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
+import { useUser } from "@supabase/auth-helpers-react";
+import Link from "next/link";
 import { getDomainTitle } from "@/lib/tco";
 
 type DomainLetter = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I";
@@ -23,7 +25,6 @@ type DomainStats = {
   totalSubdomains: number;
   completedSubdomains: number;
   bestAccuracy: number | null;
-  lastCode: string; // e.g., "B7"
 };
 
 function makeDefaultStats(letter: DomainLetter): DomainStats {
@@ -34,11 +35,11 @@ function makeDefaultStats(letter: DomainLetter): DomainStats {
     totalSubdomains,
     completedSubdomains: 0,
     bestAccuracy: null,
-    lastCode: `${letter}1`,
   };
 }
 
-export default function QuizTocPage() {
+export default function QuizHomePage() {
+  const user = useUser();
   const router = useRouter();
 
   const [stats, setStats] = useState<Record<DomainLetter, DomainStats>>(() => {
@@ -49,9 +50,10 @@ export default function QuizTocPage() {
     return init as Record<DomainLetter, DomainStats>;
   });
 
-  // Hydrate from localStorage on the client
+  // Hydrate from localStorage on the client (ONLY when signed in)
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!user) return; // no progress when logged out
 
     const updated: Partial<Record<DomainLetter, DomainStats>> = {};
 
@@ -79,28 +81,24 @@ export default function QuizTocPage() {
         }
       }
 
-      const lastCode =
-        window.localStorage.getItem(`quiz:lastCode:${L}`) || `${L}1`;
-
       updated[L] = {
         letter: L,
         title: base.title,
         totalSubdomains,
         completedSubdomains: completed,
         bestAccuracy: bestAcc,
-        lastCode,
       };
     });
 
     setStats((prev) => ({ ...prev, ...(updated as any) }));
-  }, []);
+  }, [user]);
 
   const domains = useMemo(
     () => (Object.keys(COUNTS) as DomainLetter[]).map((L) => stats[L]),
     [stats]
   );
 
-  // Overall progress
+  // Overall progress (only meaningful if logged in)
   const overall = useMemo(() => {
     const totalSubdomains = (Object.keys(COUNTS) as DomainLetter[]).reduce(
       (acc, L) => acc + COUNTS[L],
@@ -117,71 +115,94 @@ export default function QuizTocPage() {
     return { totalSubdomains, completedSubdomains, percent };
   }, [domains]);
 
-  function goToCode(code: string) {
+  /** ⬇️ Route to /quiz/domain?domain=A etc */
+  function handleDomainClick(letter: DomainLetter) {
     router.push({
-      pathname: "/quiz/runner",
-      query: { code },
+      pathname: "/quiz/domain",
+      query: { domain: letter },
     });
   }
 
-  function handleStart(letter: DomainLetter) {
-    goToCode(`${letter}1`);
-  }
-
-  function handleResume(d: DomainStats) {
-    goToCode(d.lastCode);
-  }
+  const isSignedIn = !!user;
 
   return (
     <main className="mx-auto max-w-4xl px-4 py-8">
-      {/* Header */}
+      {/* Header / hero */}
       <header className="mb-6">
-        <h1 className="text-3xl font-semibold tracking-tight">
-          BCBA Quiz – Table of Contents
+        <h1 className="text-3xl font-semibold tracking-tight text-blue-900">
+          myABA.app Quiz Home
         </h1>
         <p className="mt-2 text-sm text-gray-600">
-          Choose a domain to practice. Progress is saved locally per subdomain
-          (A1–I{COUNTS.I}) and used to auto-resume your last code in each
-          domain.
+          Work through BCBA® Task List Domains A–I with scenario-based
+          questions. Progress is tracked per subdomain when you&apos;re signed
+          in.
         </p>
+
+        {!isSignedIn && (
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <Link
+              href="/login"
+              className="rounded-md border bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+            >
+              Sign in to start
+            </Link>
+            <p className="text-xs text-gray-500">
+              You can browse domains and subdomains while signed out, but you
+              must sign in to take quizzes and save progress.
+            </p>
+          </div>
+        )}
       </header>
 
       {/* Overall progress */}
       <section className="mb-6 rounded-lg border p-4">
         <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
           <div>
-            <span className="font-medium">Overall progress</span>{" "}
-            <span className="text-gray-600">
-              · Completed{" "}
-              <strong>{overall.completedSubdomains}</strong> /{" "}
-              {overall.totalSubdomains} subdomains
-            </span>
+            <span className="font-medium">Overall domains progress</span>{" "}
+            {isSignedIn ? (
+              <span className="text-gray-600">
+                · Completed{" "}
+                <strong>{overall.completedSubdomains}</strong> /{" "}
+                {overall.totalSubdomains} subdomains
+              </span>
+            ) : (
+              <span className="text-gray-600">
+                · Sign in to track progress across subdomains.
+              </span>
+            )}
           </div>
-          <div className="text-xs text-gray-500">
-            {overall.percent}% complete
-          </div>
+          {isSignedIn && (
+            <div className="text-xs text-gray-500">
+              {overall.percent}% complete
+            </div>
+          )}
         </div>
 
         <div className="mt-2 h-2 w-full overflow-hidden rounded bg-gray-200">
           <div
-            className="h-2 rounded bg-blue-500 transition-all"
-            style={{ width: `${overall.percent}%` }}
+            className={`h-2 rounded transition-all ${
+              isSignedIn ? "bg-blue-500" : "bg-gray-300"
+            }`}
+            style={{
+              width: isSignedIn ? `${overall.percent}%` : "0%",
+            }}
           />
         </div>
       </section>
 
       {/* Domains grid */}
-      <section className="grid gap-4 md:grid-cols-2">
-        {domains.map((d) => {
+      <section className="grid gap-4 md:grid-cols-3">
+        {(Object.keys(COUNTS) as DomainLetter[]).map((L) => {
+          const d = stats[L];
           const completionPct = d.totalSubdomains
             ? Math.round((d.completedSubdomains / d.totalSubdomains) * 100)
             : 0;
-          const isStarted =
-            d.completedSubdomains > 0 || d.bestAccuracy != null;
 
           return (
-            <div
+            <button
               key={d.letter}
+              type="button"
+              onClick={() => handleDomainClick(d.letter)}
               className="group flex flex-col items-stretch rounded-xl border bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
             >
               <div className="mb-2 flex items-center justify-between gap-3">
@@ -198,60 +219,39 @@ export default function QuizTocPage() {
                     <p className="mt-1 text-xs text-gray-600">{d.title}</p>
                   )}
                 </div>
-                <div className="text-right text-[11px] text-gray-500">
-                  <div>
-                    {d.completedSubdomains} / {d.totalSubdomains} done
+                {isSignedIn && (
+                  <div className="text-right text-[11px] text-gray-500">
+                    <div>
+                      {d.completedSubdomains} / {d.totalSubdomains} done
+                    </div>
+                    <div>
+                      Best:{" "}
+                      {d.bestAccuracy != null ? `${d.bestAccuracy}%` : "—"}
+                    </div>
                   </div>
-                  <div>
-                    Best:{" "}
-                    {d.bestAccuracy != null ? `${d.bestAccuracy}%` : "—"}
-                  </div>
-                </div>
+                )}
               </div>
 
-              {/* Domain progress bar */}
+              {/* Per-domain progress bar */}
               <div className="mt-1 h-1.5 w-full overflow-hidden rounded bg-gray-200">
                 <div
-                  className="h-1.5 rounded bg-green-500 transition-all"
-                  style={{ width: `${completionPct}%` }}
+                  className={`h-1.5 rounded transition-all ${
+                    isSignedIn ? "bg-green-500" : "bg-gray-300"
+                  }`}
+                  style={{
+                    width: isSignedIn ? `${completionPct}%` : "0%",
+                  }}
                 />
               </div>
 
-              {/* Footer actions */}
-              <div className="mt-3 flex items-center justify-between text-xs text-gray-600">
-                <div className="flex flex-col">
-                  {isStarted ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => handleResume(d)}
-                        className="text-left font-medium text-blue-700 underline-offset-2 hover:underline"
-                      >
-                        Resume at {d.lastCode}
-                      </button>
-                      <span className="text-[11px] text-gray-400">
-                        Use “Start fresh” to restart at {d.letter}1
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <span>Start at {d.letter}1</span>
-                      <span className="text-[11px] text-gray-400">
-                        Click “Start fresh” to begin this domain
-                      </span>
-                    </>
-                  )}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => handleStart(d.letter)}
-                  className="rounded-md border px-2.5 py-1 text-[11px] font-medium text-gray-800 hover:bg-gray-50"
-                >
-                  Start fresh at {d.letter}1
-                </button>
+              <div className="mt-3 text-xs text-gray-600">
+                <span className="font-medium">Tap to view subdomains</span>
+                <span className="block text-[11px] text-gray-400">
+                  You&apos;ll see A1–A{COUNTS.A}, B1–B{COUNTS.B}, etc. on the
+                  next screen.
+                </span>
               </div>
-            </div>
+            </button>
           );
         })}
       </section>

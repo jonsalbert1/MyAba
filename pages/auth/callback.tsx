@@ -6,8 +6,7 @@ import { useSupabaseClient } from "@supabase/auth-helpers-react";
 export default function AuthCallbackPage() {
   const router = useRouter();
   const supabase = useSupabaseClient();
-
-  const [status, setStatus] = useState<"checking" | "error">("checking");
+  const [status, setStatus] = useState<"loading" | "error">("loading");
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -15,29 +14,29 @@ export default function AuthCallbackPage() {
 
     async function run() {
       try {
-        // ✅ In the classic magic-link flow, the session is already set
-        const { data, error } = await supabase.auth.getSession();
+        const url =
+          typeof window !== "undefined" ? window.location.href : "";
+
+        const { data, error } =
+          await supabase.auth.exchangeCodeForSession(url);
 
         if (cancelled) return;
 
         if (error) {
-          console.error("Auth callback getSession error:", error);
+          console.error("Auth callback error:", error);
           setStatus("error");
           setMessage(error.message);
           return;
         }
 
-        if (!data.session) {
-          // No session cookies -> magic link was invalid/expired/wrong browser
+        if (!data?.session) {
           setStatus("error");
-          setMessage(
-            "No active session was found. Please click your magic link again (in the same browser)."
-          );
+          setMessage("No session returned from Supabase.");
           return;
         }
 
-        // 🎯 We have a session → go capture profile and then into the app
-        router.replace("/auth/profile");
+        // ✅ Session stored; go somewhere signed-in only (e.g., Quiz home)
+        router.replace("/quiz");
       } catch (e: any) {
         if (cancelled) return;
         console.error("Auth callback exception:", e);
@@ -55,19 +54,18 @@ export default function AuthCallbackPage() {
 
   return (
     <main className="mx-auto max-w-md px-4 py-10 text-center">
-      {status === "checking" ? (
+      {status === "loading" ? (
         <>
-          <h1 className="mb-2 text-xl font-semibold">Signing you in…</h1>
-          <p className="text-sm text-gray-600">
+          <h1 className="text-xl font-semibold mb-2">Signing you in…</h1>
+          <p className="text-gray-600 text-sm">
             Please wait while we confirm your session.
           </p>
         </>
       ) : (
         <>
-          <h1 className="mb-2 text-xl font-semibold">Sign-in error</h1>
-          <p className="mb-3 text-sm text-red-600">
-            {message ??
-              "Something went wrong while processing your magic link."}
+          <h1 className="text-xl font-semibold mb-2">Sign-in error</h1>
+          <p className="text-red-600 text-sm mb-3">
+            {message ?? "Something went wrong while processing your link."}
           </p>
           <button
             onClick={() => router.push("/login")}

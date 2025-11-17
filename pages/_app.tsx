@@ -11,8 +11,12 @@ import dynamic from "next/dynamic";
 import "@/styles/globals.css";
 
 // Dynamic bits
-const EnvRibbon = dynamic(() => import("@/components/EnvRibbon"), { ssr: false });
-const UserMenu = dynamic(() => import("@/components/UserMenu"), { ssr: false });
+const EnvRibbon = dynamic(() => import("@/components/EnvRibbon"), {
+  ssr: false,
+});
+const UserMenu = dynamic(() => import("@/components/UserMenu"), {
+  ssr: false,
+});
 
 /** Active link helper: uses .nav-link / .nav-link-active from globals.css */
 function ActiveLink({
@@ -100,7 +104,7 @@ export default function App({
         <div className="mx-auto flex max-w-6xl items-center gap-4 px-4 py-3">
           {/* Mobile menu button */}
           <button
-            className="inline-flex items-center rounded-md p-2 md:hidden border"
+            className="inline-flex items-center rounded-md border p-2 md:hidden"
             aria-label="Toggle menu"
             aria-expanded={open}
             onClick={() => setOpen((s) => !s)}
@@ -122,14 +126,15 @@ export default function App({
 
           {/* Brand */}
           <Link href="/" className="flex items-center gap-2">
-  <Image
-    src="/brand/myABA_logo_full.png"
-    alt="myABA.app Study Suite"
-    width={140}
-    height={140}
-    priority
-  />
-</Link>
+            <Image
+              src="/brand/myABA_logo_full.png"
+              alt="myABA.app Study Suite"
+              width={140}
+              height={140}
+              priority
+            />
+          </Link>
+
           {/* Desktop nav */}
           <nav className="ml-auto hidden items-center gap-6 md:flex">
             {links.map((l) => (

@@ -84,7 +84,7 @@ function getNextSubdomainCode(
   return `${domain}${index + 1}`;
 }
 
-// localStorage helpers
+// localStorage helpers (still used for quick client-side progress)
 function setLocalProgress(
   domain: DomainLetter,
   code: string,
@@ -108,6 +108,34 @@ function setLocalProgress(
     window.localStorage.setItem(lastKey, code);
   } catch {
     // ignore localStorage errors
+  }
+}
+
+/** Save progress to Supabase table quiz_subdomain_progress */
+async function saveProgressToServer(
+  domain: DomainLetter,
+  code: string,
+  accuracyPercent: number
+) {
+  try {
+    const res = await fetch("/api/quiz/progress", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        domain_letter: domain,
+        subdomain_code: code,
+        accuracy_percent: accuracyPercent,
+      }),
+    });
+
+    if (!res.ok) {
+      const json = await res.json().catch(() => null);
+      console.warn("Quiz progress save failed", json || res.statusText);
+    }
+  } catch (err) {
+    console.warn("Quiz progress save error", err);
   }
 }
 
@@ -202,7 +230,7 @@ export default function QuizRunnerPage() {
 
   /* =========================
      Derived values
-  ========================== */
+  ========================= */
 
   const totalQuestions = items.length;
   const current = items[currentIdx] ?? null;
@@ -238,54 +266,31 @@ export default function QuizRunnerPage() {
     }
   }
 
-  async function saveProgressToServer(
-    domain: DomainLetter,
-    code: string,
-    accuracy: number,
-    correct: number,
-    answered: number
-  ) {
-    try {
-      await fetch("/api/quiz/progress", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          domain,
-          subdomain_code: code,
-          accuracy,
-          correct,
-          answered,
-        }),
-      });
-    } catch (err) {
-      console.warn("Failed to save quiz progress", err);
-    }
+  async function handleFinishSubdomain() {
+    if (!domain || !code) return;
+
+    const letter = domain as DomainLetter;
+
+    // Local progress (for immediate UI)
+    setLocalProgress(letter, code, accuracyPercent);
+
+    // Server progress (Supabase)
+    await saveProgressToServer(letter, code, accuracyPercent);
+
+    setShowSummary(true);
   }
 
   function handleNextQuestion() {
     if (!isAnswered) return;
+
     if (currentIdx + 1 < totalQuestions) {
       setCurrentIdx((i) => i + 1);
       setSelected(null);
       setIsAnswered(false);
       setIsCorrect(null);
     } else {
-      // End of subdomain: store progress locally, and if signed in, in Supabase
-      if (domain && code) {
-        setLocalProgress(domain, code, accuracyPercent);
-        // user check is optional here since the API is auth-protected,
-        // but it avoids an unnecessary 401 call.
-        if (user) {
-          saveProgressToServer(
-            domain,
-            code,
-            accuracyPercent,
-            correctCount,
-            answeredCount
-          );
-        }
-      }
-      setShowSummary(true);
+      // End of subdomain
+      void handleFinishSubdomain();
     }
   }
 
@@ -356,7 +361,7 @@ export default function QuizRunnerPage() {
   if (!domain || !code) {
     return (
       <main className="mx-auto max-w-3xl px-4 py-8">
-        <h1 className="text-2xl font-semibold mb-2">Quiz</h1>
+        <h1 className="mb-2 text-2xl font-semibold">Quiz</h1>
         <p className="text-sm text-gray-600">
           No subdomain code was provided. Please go back to the quiz table of
           contents and choose a subdomain.
@@ -382,8 +387,8 @@ export default function QuizRunnerPage() {
   if (!user) {
     return (
       <main className="mx-auto max-w-3xl px-4 py-8">
-        <h1 className="text-2xl font-semibold mb-2">Quiz</h1>
-        <p className="text-sm text-gray-700 mb-3">
+        <h1 className="mb-2 text-2xl font-semibold">Quiz</h1>
+        <p className="mb-3 text-sm text-gray-700">
           You must be signed in to take quizzes and track your progress.
         </p>
         <div className="flex gap-2">
@@ -419,8 +424,8 @@ export default function QuizRunnerPage() {
   if (fetchState.status === "error") {
     return (
       <main className="mx-auto max-w-3xl px-4 py-8">
-        <h1 className="text-2xl font-semibold mb-2">Quiz</h1>
-        <p className="text-sm text-red-600 mb-3">
+        <h1 className="mb-2 text-2xl font-semibold">Quiz</h1>
+        <p className="mb-3 text-sm text-red-600">
           {fetchState.message || "Error loading questions."}
         </p>
         <button
@@ -436,7 +441,7 @@ export default function QuizRunnerPage() {
   if (!current || totalQuestions === 0) {
     return (
       <main className="mx-auto max-w-3xl px-4 py-8">
-        <h1 className="text-2xl font-semibold mb-2">Quiz</h1>
+        <h1 className="mb-2 text-2xl font-semibold">Quiz</h1>
         <p className="text-sm text-gray-600">
           No questions were found for {code}. Please choose another subdomain.
         </p>
@@ -458,10 +463,10 @@ export default function QuizRunnerPage() {
       {showSummary && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40">
           <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-lg">
-            <h2 className="text-xl font-semibold mb-1">
+            <h2 className="mb-1 text-xl font-semibold">
               Subdomain complete – {code}
             </h2>
-            <p className="text-sm text-gray-600 mb-3">
+            <p className="mb-3 text-sm text-gray-600">
               Great work! Here’s how you did this round.
             </p>
             <div className="mb-4 rounded-lg border bg-gray-50 p-3 text-sm">
@@ -476,7 +481,7 @@ export default function QuizRunnerPage() {
                 <span className="font-semibold">{accuracyPercent}%</span>
               </p>
             </div>
-            <div className="flex flex-wrap gap-2 justify-end">
+            <div className="flex flex-wrap justify-end gap-2">
               <button
                 onClick={handleBackToToc}
                 className="rounded-md border px-3 py-1.5 text-sm"
@@ -503,7 +508,7 @@ export default function QuizRunnerPage() {
           ← Back to TOC
         </button>
 
-        <h1 className="text-3xl font-semibold mb-1">Quiz</h1>
+        <h1 className="mb-1 text-3xl font-semibold">Quiz</h1>
         <p className="text-sm text-gray-700">
           <span className="font-semibold uppercase tracking-wide">
             DOMAIN {domain}
@@ -549,7 +554,7 @@ export default function QuizRunnerPage() {
             {current.statement}
           </p>
         )}
-        <p className="mb-4 text-base font-medium text-gray-900 whitespace-pre-line">
+        <p className="mb-4 whitespace-pre-line text-base font-medium text-gray-900">
           {current.question}
         </p>
 

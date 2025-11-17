@@ -2,147 +2,132 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createPagesServerClient } from "@supabase/auth-helpers-nextjs";
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const supabase = createPagesServerClient({ req, res });
+type Body = {
+  domain_letter?: string;
+  subdomain_code?: string;
+  accuracy_percent?: number;
+};
 
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
+  res.setHeader("Cache-Control", "no-store");
 
-  if (userError) {
-    console.error("quiz/progress getUser error", userError);
+  if (req.method !== "POST") {
+    return res.status(405).json({ ok: false, error: "Use POST" });
   }
 
-  if (!user) {
-    return res.status(401).json({ ok: false, error: "Not authenticated" });
-  }
+  try {
+    const supabase = createPagesServerClient({ req, res });
 
-  if (req.method === "POST") {
-    // Save / update progress for a single subdomain
-    try {
-      const { domain, subdomain_code, correct, answered, accuracy } = req.body ?? {};
+    // 🔐 Get current user from Supabase cookie
+    const {
+      data: { user },
+      error: userErr,
+    } = await supabase.auth.getUser();
 
-      if (!domain || !subdomain_code) {
+    if (userErr) {
+      console.error("quiz/progress getUser error", userErr);
+    }
+
+    if (!user) {
+      return res.status(401).json({ ok: false, error: "Not authenticated" });
+    }
+
+    const body = req.body as Body;
+
+    const rawDomain = (body.domain_letter ?? "").toString().toUpperCase();
+    const rawCode = (body.subdomain_code ?? "").toString().toUpperCase();
+    const acc = Number(body.accuracy_percent ?? 0);
+
+    // Basic validation
+    if (!rawDomain || !rawCode || Number.isNaN(acc)) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Missing or invalid fields" });
+    }
+
+    if (acc < 0 || acc > 100) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "accuracy_percent must be 0–100" });
+    }
+
+    // Optional: ensure the code starts with the domain letter
+    if (!rawCode.startsWith(rawDomain)) {
+      console.warn(
+        "quiz/progress mismatch domain/code",
+        rawDomain,
+        rawCode
+      );
+    }
+
+    const now = new Date().toISOString();
+
+    // 🔄 Read existing row (if any)
+    const { data: existing, error: selErr } = await supabase
+      .from("quiz_subdomain_progress")
+      .select("best_accuracy_percent")
+      .eq("user_id", user.id)
+      .eq("subdomain_code", rawCode)
+      .maybeSingle();
+
+    if (selErr && selErr.code !== "PGRST116") {
+      // PGRST116 = row not found; ignore
+      console.error("quiz/progress select error", selErr);
+    }
+
+    const previousBest =
+      existing && typeof existing.best_accuracy_percent === "number"
+        ? existing.best_accuracy_percent
+        : null;
+
+    const bestAccuracy =
+      previousBest == null ? acc : Math.max(previousBest, acc);
+
+    if (existing) {
+      // 🔁 Update existing record
+      const { error: updErr } = await supabase
+        .from("quiz_subdomain_progress")
+        .update({
+          best_accuracy_percent: bestAccuracy,
+          last_attempt_at: now,
+        })
+        .eq("user_id", user.id)
+        .eq("subdomain_code", rawCode);
+
+      if (updErr) {
+        console.error("quiz/progress update error", updErr);
         return res
-          .status(400)
-          .json({ ok: false, error: "domain and subdomain_code are required" });
+          .status(500)
+          .json({ ok: false, error: "Failed to update progress" });
       }
-
-      const normDomain = String(domain).toUpperCase();
-      const corr = Number(correct ?? 0);
-      const ans = Number(answered ?? 0);
-
-      let acc =
-        typeof accuracy === "number"
-          ? Math.round(accuracy)
-          : ans > 0
-          ? Math.round((corr / ans) * 100)
-          : 0;
-
-      // clamp 0–100
-      acc = Math.max(0, Math.min(100, acc));
-
-      // See if we already have a row for this user + subdomain
-      const { data: existing, error: exErr } = await supabase
+    } else {
+      // ➕ Insert new record
+      const { error: insErr } = await supabase
         .from("quiz_subdomain_progress")
-        .select("*")
-        .eq("user_id", user.id)
-        .eq("subdomain_code", subdomain_code)
-        .maybeSingle();
+        .insert({
+          user_id: user.id,
+          domain_letter: rawDomain,
+          subdomain_code: rawCode,
+          best_accuracy_percent: bestAccuracy,
+          last_attempt_at: now,
+        });
 
-      if (exErr) {
-        console.error("quiz/progress select existing error", exErr);
+      if (insErr) {
+        console.error("quiz/progress insert error", insErr);
+        return res
+          .status(500)
+          .json({ ok: false, error: "Failed to insert progress" });
       }
-
-      const attempts = (existing?.attempts ?? 0) + 1;
-      const total_correct = (existing?.total_correct ?? 0) + corr;
-      const total_answered = (existing?.total_answered ?? 0) + ans;
-      const best_accuracy =
-        existing?.best_accuracy != null
-          ? Math.max(existing.best_accuracy, acc)
-          : acc;
-
-      const { data: upserted, error: upErr } = await supabase
-        .from("quiz_subdomain_progress")
-        .upsert(
-          {
-            user_id: user.id,
-            domain: normDomain,
-            subdomain_code,
-            attempts,
-            total_correct,
-            total_answered,
-            best_accuracy,
-            last_accuracy: acc,
-            last_completed_at: new Date().toISOString(),
-          },
-          { onConflict: "user_id,subdomain_code" }
-        )
-        .select()
-        .maybeSingle();
-
-      if (upErr) {
-        console.error("quiz/progress upsert error", upErr);
-        return res.status(500).json({ ok: false, error: upErr.message });
-      }
-
-      return res.status(200).json({ ok: true, row: upserted });
-    } catch (err: any) {
-      console.error("quiz/progress POST error", err);
-      return res
-        .status(500)
-        .json({ ok: false, error: err?.message || "Server error" });
     }
+
+    return res.status(200).json({ ok: true, best_accuracy: bestAccuracy });
+  } catch (err: any) {
+    console.error("quiz/progress exception", err);
+    return res
+      .status(500)
+      .json({ ok: false, error: err?.message ?? "Unexpected error" });
   }
-
-  if (req.method === "GET") {
-    // Fetch all subdomain progress for the current user
-    try {
-      const { data, error } = await supabase
-        .from("quiz_subdomain_progress")
-        .select("*")
-        .eq("user_id", user.id)
-        .order("subdomain_code", { ascending: true });
-
-      if (error) {
-        console.error("quiz/progress GET error", error);
-        return res.status(500).json({ ok: false, error: error.message });
-      }
-
-      return res.status(200).json({ ok: true, rows: data ?? [] });
-    } catch (err: any) {
-      console.error("quiz/progress GET exception", err);
-      return res
-        .status(500)
-        .json({ ok: false, error: err?.message || "Server error" });
-    }
-  }
-
-  if (req.method === "DELETE") {
-    // Clear ALL quiz progress for this user (for your "reset" button later)
-    try {
-      const { error } = await supabase
-        .from("quiz_subdomain_progress")
-        .delete()
-        .eq("user_id", user.id);
-
-      if (error) {
-        console.error("quiz/progress DELETE error", error);
-        return res.status(500).json({ ok: false, error: error.message });
-      }
-
-      return res.status(200).json({ ok: true });
-    } catch (err: any) {
-      console.error("quiz/progress DELETE exception", err);
-      return res
-        .status(500)
-        .json({ ok: false, error: err?.message || "Server error" });
-    }
-  }
-
-  res.setHeader("Allow", "GET,POST,DELETE");
-  return res.status(405).json({ ok: false, error: "Method not allowed" });
 }
-
-

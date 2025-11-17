@@ -14,18 +14,42 @@ export default function AuthCallbackPage() {
 
     async function run() {
       try {
-        const url =
-          typeof window !== "undefined" ? window.location.href : "";
+        if (typeof window === "undefined") return;
 
-        const { data, error } =
-          await supabase.auth.exchangeCodeForSession(url);
+        const auth: any = supabase.auth;
+        let data: any = null;
+        let error: any = null;
+
+        // ✅ Prefer magic-link style helpers
+        if (typeof auth.getSessionFromUrl === "function") {
+          const res = await auth.getSessionFromUrl({ storeSession: true });
+          data = res.data;
+          error = res.error;
+        } else if (typeof auth.getSessionFromURL === "function") {
+          const res = await auth.getSessionFromURL({ storeSession: true });
+          data = res.data;
+          error = res.error;
+        } else {
+          // Fallback ONLY if this is actually an OAuth PKCE callback
+          const url = new URL(window.location.href);
+          const hasCode = url.searchParams.get("code");
+          if (hasCode && typeof auth.exchangeCodeForSession === "function") {
+            const res = await auth.exchangeCodeForSession(url);
+            data = res.data;
+            error = res.error;
+          } else {
+            error = new Error(
+              "No session information found in this callback URL."
+            );
+          }
+        }
 
         if (cancelled) return;
 
         if (error) {
           console.error("Auth callback error:", error);
           setStatus("error");
-          setMessage(error.message);
+          setMessage(error.message || String(error));
           return;
         }
 
@@ -35,8 +59,8 @@ export default function AuthCallbackPage() {
           return;
         }
 
-        // ✅ Session stored; go somewhere signed-in only (e.g., Quiz home)
-        router.replace("/quiz");
+        // ✅ Session is stored – send them into the app
+        router.replace("/");
       } catch (e: any) {
         if (cancelled) return;
         console.error("Auth callback exception:", e);

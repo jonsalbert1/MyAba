@@ -1,13 +1,13 @@
 // pages/quiz/domain.tsx
 import { useRouter } from "next/router";
-import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 import { useUser } from "@supabase/auth-helpers-react";
 import { getDomainTitle, getSubdomainText } from "@/lib/tco";
 
 type DomainLetter = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I";
 
-const DOMAIN_COUNTS: Record<DomainLetter, number> = {
+const COUNTS: Record<DomainLetter, number> = {
   A: 5,
   B: 24,
   C: 12,
@@ -19,162 +19,164 @@ const DOMAIN_COUNTS: Record<DomainLetter, number> = {
   I: 7,
 };
 
-type SubdomainStats = {
-  code: string; // e.g., "A3"
-  label: string; // e.g., "A3 – Identify goals…"
+type Row = {
+  code: string; // e.g., "A1"
+  title: string;
+  started: boolean;
   completed: boolean;
   bestAccuracy: number | null;
 };
 
-export default function DomainPage() {
-  const user = useUser();
+export default function DomainSubdomainsPage() {
   const router = useRouter();
-  const { domain: rawDomain } = router.query;
+  const user = useUser();
 
-  const domain = useMemo(() => {
-    if (!rawDomain) return null;
-    const s = Array.isArray(rawDomain) ? rawDomain[0] : rawDomain;
-    const letter = s.toUpperCase() as DomainLetter;
-    return DOMAIN_COUNTS[letter] ? letter : null;
-  }, [rawDomain]);
-
-  const [subs, setSubs] = useState<SubdomainStats[]>([]);
-
-  // Build base subdomain list
-  useEffect(() => {
-    if (!domain) return;
-    const max = DOMAIN_COUNTS[domain];
-    const base: SubdomainStats[] = [];
-    for (let i = 1; i <= max; i++) {
-      const code = `${domain}${i}`;
-      const label = getSubdomainText(code) ?? code;
-      base.push({
-        code,
-        label,
-        completed: false,
-        bestAccuracy: null,
-      });
+  const domainParam = useMemo(() => {
+    const raw = (router.query.domain ?? "").toString().toUpperCase();
+    if (!raw) return null;
+    if (["A","B","C","D","E","F","G","H","I"].includes(raw)) {
+      return raw as DomainLetter;
     }
-    setSubs(base);
-  }, [domain]);
+    return null;
+  }, [router.query.domain]);
 
-  // Hydrate from localStorage ONLY when signed in
+  const [rows, setRows] = useState<Row[]>([]);
+
+  // Build rows (and hydrate progress) on the client
   useEffect(() => {
-    if (!domain) return;
-    if (typeof window === "undefined") return;
-    if (!user) return;
+    if (!domainParam) return;
 
-    setSubs((prev) =>
-      prev.map((sd) => {
-        const doneKey = `quiz:done:${domain}:${sd.code}`;
-        const accKey = `quiz:accuracy:${domain}:${sd.code}`;
+    const count = COUNTS[domainParam];
+    if (!count) {
+      setRows([]);
+      return;
+    }
 
-        const done = window.localStorage.getItem(doneKey) === "1";
+    const nextRows: Row[] = [];
+
+    for (let i = 1; i <= count; i++) {
+      const code = `${domainParam}${i}`;
+      const title = getSubdomainText(code) ?? code;
+
+      let started = false;
+      let completed = false;
+      let bestAccuracy: number | null = null;
+
+      if (typeof window !== "undefined") {
+        const startedKey = `quiz:started:${domainParam}:${code}`;
+        const doneKey = `quiz:done:${domainParam}:${code}`;
+        const accKey = `quiz:accuracy:${domainParam}:${code}`;
+
+        started = window.localStorage.getItem(startedKey) === "1";
+        completed = window.localStorage.getItem(doneKey) === "1";
 
         const accStr = window.localStorage.getItem(accKey);
-        let best: number | null = null;
         if (accStr != null) {
-          const val = Number(accStr);
-          if (Number.isFinite(val)) best = val;
+          const n = Number(accStr);
+          if (Number.isFinite(n)) bestAccuracy = n;
         }
+      }
 
-        return {
-          ...sd,
-          completed: done,
-          bestAccuracy: best,
-        };
-      })
-    );
-  }, [domain, user]);
+      nextRows.push({
+        code,
+        title,
+        started,
+        completed,
+        bestAccuracy,
+      });
+    }
 
-  if (!domain) {
+    setRows(nextRows);
+  }, [domainParam, user]); // rerun when domain or user changes
+
+  const domainTitle = domainParam ? getDomainTitle(domainParam) ?? "" : "";
+
+  if (!domainParam) {
     return (
-      <main className="mx-auto max-w-3xl px-4 py-8">
-        <h1 className="text-2xl font-semibold mb-2">Domain</h1>
-        <p className="text-sm text-gray-600 mb-3">
-          Invalid or missing domain in URL.
-        </p>
+      <main className="mx-auto max-w-4xl px-4 py-8">
         <Link
           href="/quiz"
-          className="mt-2 inline-flex rounded-md border px-4 py-2 text-sm"
+          className="mb-4 inline-flex text-sm text-blue-700 hover:underline"
         >
           ← Back to Quiz Home
         </Link>
+        <h1 className="text-2xl font-semibold mb-2">Domain not found</h1>
+        <p className="text-sm text-gray-600">
+          The requested domain is missing or invalid. Please go back and select
+          a domain from the quiz home page.
+        </p>
       </main>
     );
   }
 
-  const domainTitle = getDomainTitle(domain);
-  const isSignedIn = !!user;
+  function handleOpenSubdomain(code: string) {
+    router.push({
+      pathname: "/quiz/runner",
+      query: { code },
+    });
+  }
 
   return (
-    <main className="mx-auto max-w-3xl px-4 py-8">
-      <header className="mb-6">
-        <Link
-          href="/quiz"
-          className="mb-2 inline-flex text-sm text-blue-700 underline-offset-2 hover:underline"
-        >
-          ← Back to Quiz Home
-        </Link>
+    <main className="mx-auto max-w-4xl px-4 py-8">
+      <Link
+        href="/quiz"
+        className="mb-4 inline-flex text-sm text-blue-700 hover:underline"
+      >
+        ← Back to Quiz Home
+      </Link>
 
-        <h1 className="text-2xl font-semibold mb-1">
-          Domain {domain} Subdomains
-        </h1>
-        {domainTitle && (
-          <p className="text-sm text-gray-700">{domainTitle}</p>
-        )}
-
-        {!isSignedIn && (
-          <p className="mt-2 text-xs text-gray-600">
-            You can browse subdomains while signed out, but you must sign in to
-            start quizzes or track progress.
-          </p>
-        )}
-      </header>
+      <h1 className="text-3xl font-semibold tracking-tight mb-1">
+        Domain {domainParam} Subdomains
+      </h1>
+      {domainTitle && (
+        <p className="mb-6 text-sm text-gray-600">{domainTitle}</p>
+      )}
 
       <section className="space-y-3">
-        {subs.map((sd) => (
-          <div
-            key={sd.code}
-            className="flex items-center justify-between rounded-lg border bg-white p-3 text-sm shadow-sm"
-          >
-            <div>
-              <div className="font-semibold">
-                {sd.code} – {sd.label}
-              </div>
-              {isSignedIn && (
-                <div className="mt-1 text-xs text-gray-500">
-                  {sd.completed ? "Completed" : "Not completed yet"} · Best:{" "}
-                  {sd.bestAccuracy != null ? `${sd.bestAccuracy}%` : "—"}
-                </div>
-              )}
-            </div>
+        {rows.map((row) => {
+          let statusText: string;
+          if (row.completed) {
+            statusText = "Completed";
+          } else if (row.started) {
+            statusText = "In progress";
+          } else {
+            statusText = "Not started yet";
+          }
 
-            <div className="flex items-center gap-2">
-              {!isSignedIn ? (
-                <Link
-                  href="/login"
-                  className="rounded-md border px-3 py-1 text-xs font-medium text-gray-800 hover:bg-gray-50"
-                >
-                  Sign in to start
-                </Link>
-              ) : (
+          const bestText =
+            row.bestAccuracy != null ? `${row.bestAccuracy}%` : "—";
+
+          const buttonLabel = row.completed
+            ? `Retake ${row.code}`
+            : row.started
+            ? `Continue ${row.code}`
+            : `Start ${row.code}`;
+
+          return (
+            <div
+              key={row.code}
+              className="flex items-center justify-between gap-4 rounded-xl border bg-white px-4 py-3 shadow-sm"
+            >
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold">
+                  {row.code} – {row.title}
+                </h2>
+                <p className="mt-1 text-xs text-gray-600">
+                  {statusText} · Best: {bestText}
+                </p>
+              </div>
+              <div className="flex-shrink-0">
                 <button
                   type="button"
-                  onClick={() =>
-                    router.push({
-                      pathname: "/quiz/runner",
-                      query: { code: sd.code },
-                    })
-                  }
-                  className="rounded-md border bg-black px-3 py-1 text-xs font-semibold text-white hover:opacity-90"
+                  onClick={() => handleOpenSubdomain(row.code)}
+                  className="rounded-md bg-black px-4 py-2 text-xs font-semibold text-white hover:opacity-90"
                 >
-                  Start {sd.code}
+                  {buttonLabel}
                 </button>
-              )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </section>
     </main>
   );

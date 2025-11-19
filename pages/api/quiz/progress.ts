@@ -3,9 +3,21 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { createPagesServerClient } from "@supabase/auth-helpers-nextjs";
 
 type Body = {
+  // new names
+  domain?: string;
+  subdomain?: string;
+  lastAccuracy?: number;
+  totalCorrect?: number;
+  totalAnswered?: number;
+  completed?: boolean;
+
+  // older names we used earlier (for safety)
   domain_letter?: string;
   subdomain_code?: string;
   accuracy_percent?: number;
+  correct_count?: number;
+  answered_count?: number;
+  is_completed?: boolean;
 };
 
 export default async function handler(
@@ -21,7 +33,7 @@ export default async function handler(
   try {
     const supabase = createPagesServerClient({ req, res });
 
-    // 🔐 Get current user from Supabase cookie
+    // 🔐 Always trust Supabase auth, not body.user_id
     const {
       data: { user },
       error: userErr,
@@ -37,30 +49,51 @@ export default async function handler(
 
     const body = req.body as Body;
 
-    const rawDomain = (body.domain_letter ?? "").toString().toUpperCase();
-    const rawCode = (body.subdomain_code ?? "").toString().toUpperCase();
-    const acc = Number(body.accuracy_percent ?? 0);
+    // 🔎 Normalize fields from whatever shape the client sends
+    const rawDomain =
+      (body.domain ??
+        body.domain_letter ??
+        "").toString().trim().toUpperCase();
 
-    // Basic validation
-    if (!rawDomain || !rawCode || Number.isNaN(acc)) {
+    const rawSubdomain =
+      (body.subdomain ??
+        body.subdomain_code ??
+        "").toString().trim().toUpperCase();
+
+    const rawAccuracy =
+      typeof body.lastAccuracy === "number"
+        ? body.lastAccuracy
+        : typeof body.accuracy_percent === "number"
+        ? body.accuracy_percent
+        : 0;
+
+    const rawAnswered =
+      typeof body.totalAnswered === "number"
+        ? body.totalAnswered
+        : typeof body.answered_count === "number"
+        ? body.answered_count
+        : 0;
+
+    const rawCorrect =
+      typeof body.totalCorrect === "number"
+        ? body.totalCorrect
+        : typeof body.correct_count === "number"
+        ? body.correct_count
+        : 0;
+
+    const completed =
+      typeof body.completed === "boolean"
+        ? body.completed
+        : !!body.is_completed;
+
+    const accuracy = Math.max(0, Math.min(100, Number(rawAccuracy) || 0));
+    const answered = Math.max(0, Number(rawAnswered) || 0);
+    const correct = Math.max(0, Number(rawCorrect) || 0);
+
+    if (!rawDomain || !rawSubdomain) {
       return res
         .status(400)
-        .json({ ok: false, error: "Missing or invalid fields" });
-    }
-
-    if (acc < 0 || acc > 100) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "accuracy_percent must be 0–100" });
-    }
-
-    // Optional: ensure the code starts with the domain letter
-    if (!rawCode.startsWith(rawDomain)) {
-      console.warn(
-        "quiz/progress mismatch domain/code",
-        rawDomain,
-        rawCode
-      );
+        .json({ ok: false, error: "Missing domain or subdomain" });
     }
 
     const now = new Date().toISOString();
@@ -68,9 +101,10 @@ export default async function handler(
     // 🔄 Read existing row (if any)
     const { data: existing, error: selErr } = await supabase
       .from("quiz_subdomain_progress")
-      .select("best_accuracy_percent")
+      .select("*")
       .eq("user_id", user.id)
-      .eq("subdomain_code", rawCode)
+      .eq("domain", rawDomain)
+      .eq("subdomain", rawSubdomain)
       .maybeSingle();
 
     if (selErr && selErr.code !== "PGRST116") {
@@ -78,24 +112,44 @@ export default async function handler(
       console.error("quiz/progress select error", selErr);
     }
 
-    const previousBest =
-      existing && typeof existing.best_accuracy_percent === "number"
-        ? existing.best_accuracy_percent
-        : null;
-
-    const bestAccuracy =
-      previousBest == null ? acc : Math.max(previousBest, acc);
-
     if (existing) {
-      // 🔁 Update existing record
+      // ===== UPDATE path =====
+      const attempts = (existing.attempts ?? 0) + 1;
+
+      const total_answered =
+        (existing.total_answered ?? 0) + (answered > 0 ? answered : 0);
+      const total_correct =
+        (existing.total_correct ?? 0) + (correct > 0 ? correct : 0);
+
+      const best_accuracy_percent =
+        typeof existing.best_accuracy_percent === "number"
+          ? Math.max(existing.best_accuracy_percent, accuracy)
+          : accuracy;
+
+      const updatePayload: any = {
+        last_accuracy: accuracy,
+        answered_count: answered,
+        correct_count: correct,
+        attempts,
+        total_answered,
+        total_correct,
+        best_accuracy_percent,
+        last_attempt_at: now,
+        is_completed: completed,
+      };
+
+      // ⚠️ IMPORTANT: never send last_completed_at: null
+      // Only update it when this run is considered "completed"
+      if (completed) {
+        updatePayload.last_completed_at = now;
+      }
+
       const { error: updErr } = await supabase
         .from("quiz_subdomain_progress")
-        .update({
-          best_accuracy_percent: bestAccuracy,
-          last_attempt_at: now,
-        })
+        .update(updatePayload)
         .eq("user_id", user.id)
-        .eq("subdomain_code", rawCode);
+        .eq("domain", rawDomain)
+        .eq("subdomain", rawSubdomain);
 
       if (updErr) {
         console.error("quiz/progress update error", updErr);
@@ -103,17 +157,39 @@ export default async function handler(
           .status(500)
           .json({ ok: false, error: "Failed to update progress" });
       }
+
+      return res.status(200).json({
+        ok: true,
+        mode: "update",
+        best_accuracy_percent,
+      });
     } else {
-      // ➕ Insert new record
+      // ===== INSERT path =====
+      const attempts = 1;
+      const total_answered = answered;
+      const total_correct = correct;
+      const best_accuracy_percent = accuracy;
+
+      const insertPayload: any = {
+        user_id: user.id,
+        domain: rawDomain,
+        subdomain: rawSubdomain,
+        last_accuracy: accuracy,
+        answered_count: answered,
+        correct_count: correct,
+        attempts,
+        total_answered,
+        total_correct,
+        best_accuracy_percent,
+        last_attempt_at: now,
+        is_completed: completed,
+        // 👇 DO NOT send last_completed_at here so Postgres uses the DEFAULT
+        // last_completed_at: <omit>,
+      };
+
       const { error: insErr } = await supabase
         .from("quiz_subdomain_progress")
-        .insert({
-          user_id: user.id,
-          domain_letter: rawDomain,
-          subdomain_code: rawCode,
-          best_accuracy_percent: bestAccuracy,
-          last_attempt_at: now,
-        });
+        .insert(insertPayload);
 
       if (insErr) {
         console.error("quiz/progress insert error", insErr);
@@ -121,9 +197,13 @@ export default async function handler(
           .status(500)
           .json({ ok: false, error: "Failed to insert progress" });
       }
-    }
 
-    return res.status(200).json({ ok: true, best_accuracy: bestAccuracy });
+      return res.status(200).json({
+        ok: true,
+        mode: "insert",
+        best_accuracy_percent,
+      });
+    }
   } catch (err: any) {
     console.error("quiz/progress exception", err);
     return res

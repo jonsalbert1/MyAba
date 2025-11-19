@@ -84,7 +84,7 @@ function getNextSubdomainCode(
   return `${domain}${index + 1}`;
 }
 
-// localStorage helpers (still used for quick client-side progress)
+// localStorage helpers (used for quick client-side progress on the TOC)
 function setLocalProgress(
   domain: DomainLetter,
   code: string,
@@ -111,11 +111,19 @@ function setLocalProgress(
   }
 }
 
-/** Save progress to Supabase table quiz_subdomain_progress */
+/**
+ * Save progress to Supabase via /api/quiz/progress
+ * Table columns used: domain, subdomain,
+ * last_accuracy, best_accuracy_percent, answered_count, correct_count,
+ * is_completed, attempts, last_attempt_at, last_completed_at
+ */
 async function saveProgressToServer(
   domain: DomainLetter,
   code: string,
-  accuracyPercent: number
+  accuracyPercent: number,
+  answeredCount: number,
+  correctCount: number,
+  completed: boolean
 ) {
   try {
     const res = await fetch("/api/quiz/progress", {
@@ -124,9 +132,12 @@ async function saveProgressToServer(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        domain_letter: domain,
-        subdomain_code: code,
+        domain, // "A"
+        subdomain: code, // "A2"
         accuracy_percent: accuracyPercent,
+        answered_count: answeredCount,
+        correct_count: correctCount,
+        completed,
       }),
     });
 
@@ -260,22 +271,41 @@ export default function QuizRunnerPage() {
     setSelected(choice);
     setIsAnswered(true);
     setIsCorrect(correct);
-    setAnsweredCount((n) => n + 1);
-    if (correct) {
-      setCorrectCount((n) => n + 1);
+
+    // Compute next counts
+    const nextAnswered = answeredCount + 1;
+    const nextCorrect = correctCount + (correct ? 1 : 0);
+    const nextAccuracy =
+      nextAnswered > 0
+        ? Math.round((nextCorrect / nextAnswered) * 100)
+        : 0;
+
+    setAnsweredCount(nextAnswered);
+    setCorrectCount(nextCorrect);
+
+    // Save partial progress (not completed yet)
+    if (domain && code) {
+      saveProgressToServer(domain, code, nextAccuracy, nextAnswered, nextCorrect, false);
     }
   }
 
   async function handleFinishSubdomain() {
-    if (!domain || !code) return;
+    if (!domain || !code || !user) return;
 
     const letter = domain as DomainLetter;
 
-    // Local progress (for immediate UI)
+    // Local progress (for TOC)
     setLocalProgress(letter, code, accuracyPercent);
 
-    // Server progress (Supabase)
-    await saveProgressToServer(letter, code, accuracyPercent);
+    // Server progress – mark as completed
+    await saveProgressToServer(
+      letter,
+      code,
+      accuracyPercent,
+      answeredCount,
+      correctCount,
+      true
+    );
 
     setShowSummary(true);
   }
@@ -346,7 +376,7 @@ export default function QuizRunnerPage() {
           </p>
         )}
         {selectedRationale && (
-          <p className="mt-1 text-xs text-blue-900/80 whitespace-pre-line">
+          <p className="mt-1 whitespace-pre-line text-xs text-blue-900/80">
             Option {selected}: {selectedRationale}
           </p>
         )}
@@ -550,7 +580,7 @@ export default function QuizRunnerPage() {
       {/* Question */}
       <section className="rounded-lg border bg-white p-4 shadow-sm">
         {current.statement && (
-          <p className="mb-3 text-sm text-gray-700 whitespace-pre-line">
+          <p className="mb-3 whitespace-pre-line text-sm text-gray-700">
             {current.statement}
           </p>
         )}

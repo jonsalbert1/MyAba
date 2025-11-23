@@ -11,8 +11,7 @@ import { getDomainTitle, getSubdomainText } from "@/lib/tco";
 type QuizItem = {
   id: string;
   domain?: string | null;
-  subdomain: string; // e.g., "A3"
-  statement?: string | null;
+  subdomain: string; // e.g., "C06"
   question: string;
   a: string;
   b: string;
@@ -20,10 +19,8 @@ type QuizItem = {
   d: string;
   correct_answer: string;
   rationale_correct?: string | null;
-  rationale_a?: string | null;
-  rationale_b?: string | null;
-  rationale_c?: string | null;
-  rationale_d?: string | null;
+  // NEW: optional image path from Supabase
+  image_path?: string | null;
 };
 
 type ChoiceLetter = "A" | "B" | "C" | "D";
@@ -71,7 +68,7 @@ function parseCode(raw: string | string[] | undefined): {
   if (!DOMAIN_COUNTS[letter] || !Number.isFinite(num) || num <= 0) {
     return { domain: null, code: null, index: null };
   }
-  return { domain: letter, code: `${letter}${num}`, index: num };
+  return { domain: letter, code: `${letter}${num.toString().padStart(2, "0")}`, index: num };
 }
 
 function getNextSubdomainCode(
@@ -81,10 +78,10 @@ function getNextSubdomainCode(
   const max = DOMAIN_COUNTS[domain];
   if (!max) return null;
   if (index >= max) return null;
-  return `${domain}${index + 1}`;
+  return `${domain}${(index + 1).toString().padStart(2, "0")}`;
 }
 
-// localStorage helpers (used for quick client-side progress on the TOC)
+// Local progress
 function setLocalProgress(
   domain: DomainLetter,
   code: string,
@@ -107,16 +104,11 @@ function setLocalProgress(
 
     window.localStorage.setItem(lastKey, code);
   } catch {
-    // ignore localStorage errors
+    // ignore localStorage issues
   }
 }
 
-/**
- * Save progress to Supabase via /api/quiz/progress
- * Table columns used: domain, subdomain,
- * last_accuracy, best_accuracy_percent, answered_count, correct_count,
- * is_completed, attempts, last_attempt_at, last_completed_at
- */
+// Save to server
 async function saveProgressToServer(
   domain: DomainLetter,
   code: string,
@@ -132,8 +124,8 @@ async function saveProgressToServer(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        domain, // "A"
-        subdomain: code, // "A2"
+        domain,
+        subdomain: code,
         accuracy_percent: accuracyPercent,
         answered_count: answeredCount,
         correct_count: correctCount,
@@ -150,6 +142,22 @@ async function saveProgressToServer(
   }
 }
 
+/**
+ * Build a full image URL for quiz images.
+ * Set NEXT_PUBLIC_QUIZ_IMAGE_BASE_URL in your env, e.g.:
+ * https://YOUR-PROJECT.supabase.co/storage/v1/object/public/quiz-images
+ */
+function buildImageUrl(imagePath?: string | null): string | null {
+  if (!imagePath) return null;
+  const base = process.env.NEXT_PUBLIC_QUIZ_IMAGE_BASE_URL;
+  if (!base) {
+    // Fallback: if you ever store full URLs directly in image_path
+    return imagePath;
+  }
+  const sep = base.endsWith("/") ? "" : "/";
+  return `${base}${sep}${imagePath}`;
+}
+
 /* =========================
    Component
 ========================= */
@@ -162,12 +170,9 @@ export default function QuizRunnerPage() {
     [router.query.code]
   );
 
-  const [fetchState, setFetchState] = useState<FetchState>({
-    status: "idle",
-  });
+  const [fetchState, setFetchState] = useState<FetchState>({ status: "idle" });
   const [items, setItems] = useState<QuizItem[]>([]);
 
-  // Quiz state
   const [currentIdx, setCurrentIdx] = useState(0);
   const [answeredCount, setAnsweredCount] = useState(0);
   const [correctCount, setCorrectCount] = useState(0);
@@ -176,17 +181,13 @@ export default function QuizRunnerPage() {
   const [isAnswered, setIsAnswered] = useState(false);
   const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
 
-  // Summary popup
   const [showSummary, setShowSummary] = useState(false);
 
-  /* =========================
-     Fetch questions for this code (only if signed in)
-  ========================= */
-
+  // Fetch questions
   useEffect(() => {
     if (!domain || !code) return;
-    if (user === undefined) return; // still hydrating
-    if (!user) return; // not signed in, don't fetch
+    if (user === undefined) return;
+    if (!user) return;
 
     let cancelled = false;
 
@@ -232,16 +233,11 @@ export default function QuizRunnerPage() {
       }
     }
 
-    load();
-
+    void load();
     return () => {
       cancelled = true;
     };
   }, [domain, code, user]);
-
-  /* =========================
-     Derived values
-  ========================= */
 
   const totalQuestions = items.length;
   const current = items[currentIdx] ?? null;
@@ -251,12 +247,7 @@ export default function QuizRunnerPage() {
 
   const domainTitle =
     (domain && getDomainTitle(domain)) ?? (domain ? `Domain ${domain}` : "");
-
   const subTitle = code ? getSubdomainText(code) ?? code : "";
-
-  /* =========================
-     Handlers
-  ========================= */
 
   function handleAnswer(choice: ChoiceLetter) {
     if (!current || isAnswered) return;
@@ -272,7 +263,6 @@ export default function QuizRunnerPage() {
     setIsAnswered(true);
     setIsCorrect(correct);
 
-    // Compute next counts
     const nextAnswered = answeredCount + 1;
     const nextCorrect = correctCount + (correct ? 1 : 0);
     const nextAccuracy =
@@ -283,21 +273,17 @@ export default function QuizRunnerPage() {
     setAnsweredCount(nextAnswered);
     setCorrectCount(nextCorrect);
 
-    // Save partial progress (not completed yet)
     if (domain && code) {
-      saveProgressToServer(domain, code, nextAccuracy, nextAnswered, nextCorrect, false);
+      void saveProgressToServer(domain, code, nextAccuracy, nextAnswered, nextCorrect, false);
     }
   }
 
   async function handleFinishSubdomain() {
     if (!domain || !code || !user) return;
-
     const letter = domain as DomainLetter;
 
-    // Local progress (for TOC)
     setLocalProgress(letter, code, accuracyPercent);
 
-    // Server progress – mark as completed
     await saveProgressToServer(
       letter,
       code,
@@ -319,7 +305,6 @@ export default function QuizRunnerPage() {
       setIsAnswered(false);
       setIsCorrect(null);
     } else {
-      // End of subdomain
       void handleFinishSubdomain();
     }
   }
@@ -344,24 +329,8 @@ export default function QuizRunnerPage() {
     });
   }
 
-  /* =========================
-     Rationale rendering
-  ========================= */
-
   function renderRationales() {
     if (!current || !isAnswered || !selected) return null;
-
-    const choiceKey = `rationale_${selected.toLowerCase()}` as
-      | "rationale_a"
-      | "rationale_b"
-      | "rationale_c"
-      | "rationale_d";
-
-    const selectedRationale = (current as any)[choiceKey] as
-      | string
-      | null
-      | undefined;
-
     const generic = current.rationale_correct;
 
     return (
@@ -375,18 +344,9 @@ export default function QuizRunnerPage() {
             {generic}
           </p>
         )}
-        {selectedRationale && (
-          <p className="mt-1 whitespace-pre-line text-xs text-blue-900/80">
-            Option {selected}: {selectedRationale}
-          </p>
-        )}
       </div>
     );
   }
-
-  /* =========================
-     Auth gating views
-  ========================= */
 
   if (!domain || !code) {
     return (
@@ -439,10 +399,6 @@ export default function QuizRunnerPage() {
     );
   }
 
-  /* =========================
-     Error / empty / main view
-  ========================= */
-
   if (fetchState.status === "loading" || fetchState.status === "idle") {
     return (
       <main className="mx-auto max-w-3xl px-4 py-8">
@@ -486,10 +442,10 @@ export default function QuizRunnerPage() {
   }
 
   const questionNumber = currentIdx + 1;
+  const imageUrl = buildImageUrl(current.image_path);
 
   return (
     <main className="relative mx-auto max-w-3xl px-4 py-8">
-      {/* Summary popup */}
       {showSummary && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40">
           <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-lg">
@@ -520,7 +476,7 @@ export default function QuizRunnerPage() {
               </button>
               <button
                 onClick={handleNextSubdomain}
-                className="rounded-md border bg-black px-3 py-1.5 text-sm font-semibold text-white"
+                className="rounded-md border bgBlack px-3 py-1.5 text-sm font-semibold text-white bg-black"
               >
                 Next subdomain
               </button>
@@ -529,7 +485,6 @@ export default function QuizRunnerPage() {
         </div>
       )}
 
-      {/* Header */}
       <header className="mb-6">
         <button
           onClick={handleBackToToc}
@@ -551,7 +506,6 @@ export default function QuizRunnerPage() {
         )}
       </header>
 
-      {/* Progress bar */}
       <section className="mb-5 rounded-lg border p-3 text-sm">
         <div className="flex items-center justify-between">
           <div>
@@ -577,18 +531,22 @@ export default function QuizRunnerPage() {
         </div>
       </section>
 
-      {/* Question */}
       <section className="rounded-lg border bg-white p-4 shadow-sm">
-        {current.statement && (
-          <p className="mb-3 whitespace-pre-line text-sm text-gray-700">
-            {current.statement}
-          </p>
+        {/* Optional image */}
+        {imageUrl && (
+          <div className="mb-4 flex justify-center">
+            <img
+              src={imageUrl}
+              alt="Quiz question illustration"
+              className="max-h-64 w-full max-w-xl rounded-md border object-contain"
+            />
+          </div>
         )}
+
         <p className="mb-4 whitespace-pre-line text-base font-medium text-gray-900">
           {current.question}
         </p>
 
-        {/* Choices */}
         <div className="space-y-2">
           {(["A", "B", "C", "D"] as ChoiceLetter[]).map((letter) => {
             const key = letter.toLowerCase() as "a" | "b" | "c" | "d";
@@ -625,10 +583,8 @@ export default function QuizRunnerPage() {
           })}
         </div>
 
-        {/* Rationale */}
         {renderRationales()}
 
-        {/* Next button */}
         <div className="mt-4 flex justify-end">
           <button
             type="button"

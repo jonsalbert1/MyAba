@@ -20,12 +20,17 @@ const COUNTS: Record<DomainLetter, number> = {
 };
 
 type Row = {
-  code: string; // e.g., "A1"
+  code: string; // e.g., "A01"
   title: string;
   started: boolean;
   completed: boolean;
   bestAccuracy: number | null;
 };
+
+// Helper to build zero-padded subdomain code, e.g. A01, B03
+function makeSubdomainCode(letter: DomainLetter, index: number): string {
+  return `${letter}${index.toString().padStart(2, "0")}`;
+}
 
 export default function DomainSubdomainsPage() {
   const router = useRouter();
@@ -34,7 +39,7 @@ export default function DomainSubdomainsPage() {
   const domainParam = useMemo(() => {
     const raw = (router.query.domain ?? "").toString().toUpperCase();
     if (!raw) return null;
-    if (["A","B","C","D","E","F","G","H","I"].includes(raw)) {
+    if (["A", "B", "C", "D", "E", "F", "G", "H", "I"].includes(raw)) {
       return raw as DomainLetter;
     }
     return null;
@@ -55,30 +60,72 @@ export default function DomainSubdomainsPage() {
     const nextRows: Row[] = [];
 
     for (let i = 1; i <= count; i++) {
-      const code = `${domainParam}${i}`;
-      const title = getSubdomainText(code) ?? code;
+      // New zero-padded code (A01, B03, etc.)
+      const codeNew = makeSubdomainCode(domainParam, i);
+      // Legacy code (A1, B3, etc.) for backward compatibility
+      const codeOld = `${domainParam}${i}`;
+
+      // Pull from TCO map – treat empty strings as "missing"
+      const rawTitleNew = getSubdomainText(codeNew);
+      const rawTitleOld = getSubdomainText(codeOld);
+
+      const title =
+        (rawTitleNew && rawTitleNew.trim().length > 0
+          ? rawTitleNew
+          : undefined) ??
+        (rawTitleOld && rawTitleOld.trim().length > 0
+          ? rawTitleOld
+          : undefined) ??
+        codeNew;
 
       let started = false;
       let completed = false;
       let bestAccuracy: number | null = null;
 
       if (typeof window !== "undefined") {
-        const startedKey = `quiz:started:${domainParam}:${code}`;
-        const doneKey = `quiz:done:${domainParam}:${code}`;
-        const accKey = `quiz:accuracy:${domainParam}:${code}`;
+        const startedKeyNew = `quiz:started:${domainParam}:${codeNew}`;
+        const startedKeyOld = `quiz:started:${domainParam}:${codeOld}`;
+        const doneKeyNew = `quiz:done:${domainParam}:${codeNew}`;
+        const doneKeyOld = `quiz:done:${domainParam}:${codeOld}`;
+        const accKeyNew = `quiz:accuracy:${domainParam}:${codeNew}`;
+        const accKeyOld = `quiz:accuracy:${domainParam}:${codeOld}`;
 
-        started = window.localStorage.getItem(startedKey) === "1";
-        completed = window.localStorage.getItem(doneKey) === "1";
+        const startedNew = window.localStorage.getItem(startedKeyNew);
+        const startedOld = window.localStorage.getItem(startedKeyOld);
+        started = startedNew === "1" || startedOld === "1";
 
-        const accStr = window.localStorage.getItem(accKey);
+        // migrate legacy → new
+        if (!startedNew && startedOld === "1") {
+          window.localStorage.setItem(startedKeyNew, "1");
+        }
+
+        const doneNew = window.localStorage.getItem(doneKeyNew);
+        const doneOld = window.localStorage.getItem(doneKeyOld);
+        completed = doneNew === "1" || doneOld === "1";
+
+        if (!doneNew && doneOld === "1") {
+          window.localStorage.setItem(doneKeyNew, "1");
+        }
+
+        const accStrNew = window.localStorage.getItem(accKeyNew);
+        const accStrOld = window.localStorage.getItem(accKeyOld);
+        const accStr = accStrNew ?? accStrOld ?? null;
+
         if (accStr != null) {
           const n = Number(accStr);
-          if (Number.isFinite(n)) bestAccuracy = n;
+          if (Number.isFinite(n)) {
+            bestAccuracy = n;
+
+            // migrate legacy → new
+            if (!accStrNew && accStrOld != null) {
+              window.localStorage.setItem(accKeyNew, accStrOld);
+            }
+          }
         }
       }
 
       nextRows.push({
-        code,
+        code: codeNew,
         title,
         started,
         completed,
@@ -100,7 +147,7 @@ export default function DomainSubdomainsPage() {
         >
           ← Back to Quiz Home
         </Link>
-        <h1 className="text-2xl font-semibold mb-2">Domain not found</h1>
+        <h1 className="mb-2 text-2xl font-semibold">Domain not found</h1>
         <p className="text-sm text-gray-600">
           The requested domain is missing or invalid. Please go back and select
           a domain from the quiz home page.
@@ -125,7 +172,7 @@ export default function DomainSubdomainsPage() {
         ← Back to Quiz Home
       </Link>
 
-      <h1 className="text-3xl font-semibold tracking-tight mb-1">
+      <h1 className="mb-1 text-3xl font-semibold tracking-tight">
         Domain {domainParam} Subdomains
       </h1>
       {domainTitle && (

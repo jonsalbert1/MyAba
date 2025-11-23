@@ -2,11 +2,65 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-/**
- * GET /api/quiz/fetch?domain=A&code=A1&limit=10&shuffle=1&debug=1
- * Returns quiz questions from Supabase.
- */
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+type DomainLetter = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I";
+
+const DOMAIN_COUNTS: Record<DomainLetter, number> = {
+  A: 5,
+  B: 24,
+  C: 12,
+  D: 9,
+  E: 12,
+  F: 8,
+  G: 19,
+  H: 8,
+  I: 7,
+};
+
+function makeSubdomainCode(domain: DomainLetter, index: number): string {
+  return `${domain}${index.toString().padStart(2, "0")}`;
+}
+
+function normalizeDomainAndCode(req: NextApiRequest): {
+  domain: DomainLetter | null;
+  code: string | null; // canonical, e.g. "C03"
+} {
+  const rawDomain = String(req.query.domain ?? "").toUpperCase();
+  if (!rawDomain || !["A","B","C","D","E","F","G","H","I"].includes(rawDomain)) {
+    return { domain: null, code: null };
+  }
+  const domain = rawDomain as DomainLetter;
+
+  const rawCode = String(req.query.code ?? "").toUpperCase();
+  if (!rawCode) return { domain: null, code: null };
+
+  let num: number | null = null;
+
+  // Case 1: "C1", "C01", "C10", etc.
+  if (/^[A-I][0-9]+$/.test(rawCode)) {
+    if (rawCode[0] !== domain) {
+      return { domain: null, code: null };
+    }
+    num = Number(rawCode.slice(1));
+  }
+  // Case 2: "1", "2", "10" (just the number)
+  else if (/^[0-9]+$/.test(rawCode)) {
+    num = Number(rawCode);
+  } else {
+    return { domain: null, code: null };
+  }
+
+  if (!Number.isFinite(num) || num <= 0 || num > DOMAIN_COUNTS[domain]) {
+    return { domain: null, code: null };
+  }
+
+  const canonicalCode = makeSubdomainCode(domain, num);
+  return { domain, code: canonicalCode };
+}
+
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
   res.setHeader("Cache-Control", "no-store");
 
   try {
@@ -14,71 +68,70 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(405).json({ ok: false, error: "Use GET" });
     }
 
-    const domain = String(req.query.domain ?? "").trim().toUpperCase();
-    const codeUpper = String(req.query.code ?? "").trim().toUpperCase();
-    const limit = Math.max(1, Math.min(50, Number(req.query.limit ?? 10)));
-    const shuffle = req.query.shuffle === "1" || req.query.shuffle === "true";
-    const debug = req.query.debug === "1" || req.query.debug === "true";
+    const { domain, code } = normalizeDomainAndCode(req);
 
-    // ✅ Build base query with only existing columns
-    let q = supabaseAdmin
+    if (!domain || !code) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Invalid domain or code" });
+    }
+
+    const limit = Math.max(1, Math.min(50, Number(req.query.limit ?? 10)));
+    const shuffle =
+      req.query.shuffle === "1" || req.query.shuffle === "true";
+    const debug =
+      req.query.debug === "1" || req.query.debug === "true";
+
+    let query = supabaseAdmin
       .from("quiz_questions")
       .select(
         `
         id,
-        exam_name,
         domain,
-        domain_text,
         subdomain,
         subdomain_text,
         question,
-        a, b, c, d,
+        a,
+        b,
+        c,
+        d,
         correct_answer,
         rationale_correct,
-        data_id,
-        date,
-        published,
-        created_at
-      `,
-        { count: "exact" }
-      );
+        image_path
+      `
+      )
+      .eq("domain", domain)
+      .eq("subdomain", code);
 
-    // ✅ Apply filters
-    if (domain) q = q.ilike("domain", domain);      // domain = "A"..."I"
-    if (codeUpper) q = q.eq("subdomain", codeUpper); // subdomain = "A1", "B2", etc.
-
-    // Optional filter for published visibility
-    q = q.or("published.is.true,published.is.null");
-
-    // Order & limit
-    q = q.order("id", { ascending: true }).limit(limit);
-
-    const { data, error, count } = await q;
-
-    if (error) {
-      return res.status(500).json({
-        ok: false,
-        error: error.message,
-        hint: "Check that the 'quiz_questions' table and its columns exist in Supabase.",
-      });
+    if (shuffle) {
+      query = query.order("id", { ascending: false });
+    } else {
+      query = query.order("id", { ascending: true });
     }
 
-    // ✅ Always return an array
-    let rows = Array.isArray(data) ? data : [];
-    if (shuffle) rows = [...rows].sort(() => Math.random() - 0.5);
+    query = query.limit(limit);
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error("Supabase quiz_questions error:", error);
+      return res
+        .status(500)
+        .json({ ok: false, error: "Database error", details: error.message });
+    }
 
     return res.status(200).json({
       ok: true,
-      count: count ?? null,
-      ...(debug
-        ? { filters: { domain, code: codeUpper, limit, shuffle }, sample: rows.slice(0, 3) }
-        : {}),
-      data: rows,
+      domain,
+      code,
+      count: data?.length ?? 0,
+      items: data ?? [],
+      debug: debug ? { domain, code, limit, shuffle } : undefined,
     });
-  } catch (e: any) {
-    return res.status(500).json({
-      ok: false,
-      error: e?.message ?? "Unexpected error",
-    });
+  } catch (err: any) {
+    console.error("Quiz fetch handler error:", err);
+    return res
+      .status(500)
+      .json({ ok: false, error: err?.message || "Unknown error" });
   }
 }

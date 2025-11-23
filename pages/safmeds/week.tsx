@@ -1,5 +1,5 @@
 // pages/safmeds/week.tsx
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useUser, useSupabaseClient } from "@supabase/auth-helpers-react";
 import { useRouter } from "next/router";
 import {
@@ -42,6 +42,92 @@ function addDays(dateStr: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/**
+ * Helper to draw a simple net-score line chart directly in jsPDF.
+ * - X axis: trial_number
+ * - Y axis: net_score
+ */
+function drawNetScoreChart(
+  doc: any,
+  y: number,
+  pageHeight: number,
+  marginLeft: number,
+  chartData: { trial_number: number; net_score: number }[]
+): number {
+  if (!chartData.length) return y;
+
+  const chartHeight = 40; // mm
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const marginRight = marginLeft;
+  const chartWidth = pageWidth - marginLeft - marginRight;
+
+  // Page break if needed
+  if (y + chartHeight + 4 > pageHeight) {
+    doc.addPage();
+    y = 14;
+  }
+
+  const x0 = marginLeft;
+  const y0 = y;
+  const x1 = x0 + chartWidth;
+  const y1 = y0 + chartHeight;
+
+  // Compute min/max net score
+  let minNet = chartData[0].net_score;
+  let maxNet = chartData[0].net_score;
+  chartData.forEach((p) => {
+    if (p.net_score < minNet) minNet = p.net_score;
+    if (p.net_score > maxNet) maxNet = p.net_score;
+  });
+
+  if (minNet === maxNet) {
+    // avoid flat 0-range
+    minNet = minNet - 1;
+    maxNet = maxNet + 1;
+  }
+
+  const range = maxNet - minNet || 1;
+
+  doc.setDrawColor(0, 0, 0);
+  doc.setLineWidth(0.2);
+
+  // Outer box
+  doc.rect(x0, y0, chartWidth, chartHeight);
+
+  // Horizontal midline (0 if in range)
+  if (minNet < 0 && maxNet > 0) {
+    const zeroY = y1 - ((0 - minNet) / range) * chartHeight;
+    doc.setDrawColor(200, 200, 200);
+    doc.line(x0, zeroY, x1, zeroY);
+  }
+
+  // Plot line
+  doc.setDrawColor(37, 99, 235); // blue-ish
+  doc.setLineWidth(0.5);
+
+  const n = chartData.length;
+  chartData.forEach((p, idx) => {
+    const t = n === 1 ? 0 : idx / (n - 1); // 0..1
+    const px = x0 + t * chartWidth;
+    const py =
+      y1 - ((p.net_score - minNet) / range) * chartHeight; // invert for PDF coords
+
+    if (idx === 0) {
+      doc.moveTo(px, py);
+    } else {
+      doc.lineTo(px, py);
+    }
+  });
+  doc.stroke();
+
+  // X-axis label
+  doc.setFontSize(8);
+  doc.setFont("helvetica", "normal");
+  doc.text("Trial", x0 + chartWidth / 2, y1 + 4, { align: "center" });
+
+  return y1 + 8; // new y with some spacing
+}
+
 export default function SafmedsWeekPage() {
   const user = useUser();
   const supabase = useSupabaseClient();
@@ -53,9 +139,6 @@ export default function SafmedsWeekPage() {
     null
   );
   const [runsByDay, setRunsByDay] = useState<Record<string, SafmedsRun[]>>({});
-
-  // ✅ This ref will wrap everything we want in the PDF (summary + graphs + tables)
-  const reportRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!user) {
@@ -91,7 +174,7 @@ export default function SafmedsWeekPage() {
         const weekStart = summary.week_start.slice(0, 10);
         const weekEnd = addDays(weekStart, 6);
 
-        // 2) Get all safmeds_runs for that week (all trials, not just best-of-day)
+        // 2) Get all safmeds_runs for that week (all trials)
         const { data: runRows, error: runsErr } = await supabase
           .from("safmeds_runs")
           .select("*")
@@ -155,7 +238,7 @@ export default function SafmedsWeekPage() {
             run.incorrect,
             run.net_score,
             run.duration_seconds ?? "",
-            (run.deck ?? "").replace(/,/g, " "), // avoid breaking CSV
+            (run.deck ?? "").replace(/,/g, " "),
             (run.notes ?? "").replace(/,/g, " "),
             run.local_ts ?? "",
           ].join(",")
@@ -177,67 +260,107 @@ export default function SafmedsWeekPage() {
     URL.revokeObjectURL(url);
   };
 
-  // ✅ New: Download PDF of the report section
+  // ✅ PDF with text summary + simple line graphs per day (no html2canvas)
   const handleDownloadPdf = async () => {
-    if (!weeklySummary || !reportRef.current) return;
+    if (!weeklySummary) return;
 
     try {
-      const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([
-        import("html2canvas"),
-        import("jspdf"),
-      ]);
+      const { default: jsPDF } = await import("jspdf");
+      const doc = new jsPDF("p", "mm", "a4");
 
-      const canvas = await html2canvas(reportRef.current, {
-        scale: 2,
-        useCORS: true,
-      });
+      const marginLeft = 12;
+      let y = 14;
+      const lineHeight = 6;
+      const pageHeight = doc.internal.pageSize.getHeight() - 10;
 
-      const imgData = canvas.toDataURL("image/png");
-      const pdf = new jsPDF("p", "mm", "a4");
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = pdf.internal.pageSize.getHeight();
-
-      const imgWidth = pdfWidth;
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-      let position = 0;
-      let remainingHeight = imgHeight;
-
-      // If content is taller than one page, add extra pages
-      let page = 0;
-      while (remainingHeight > 0) {
-        if (page > 0) {
-          pdf.addPage();
+      const addLine = (text = "", options?: { bold?: boolean }) => {
+        if (y > pageHeight) {
+          doc.addPage();
+          y = 14;
         }
-        const sourceY =
-          (imgHeight - remainingHeight) * (canvas.height / imgHeight);
-        const pageCanvas = document.createElement("canvas");
-        pageCanvas.width = canvas.width;
-        pageCanvas.height = Math.min(
-          (pdfHeight * canvas.height) / pdfWidth,
-          remainingHeight * (canvas.height / imgHeight)
-        );
-        const pageCtx = pageCanvas.getContext("2d");
-        if (pageCtx) {
-          pageCtx.drawImage(
-            canvas,
-            0,
-            sourceY,
-            canvas.width,
-            pageCanvas.height,
-            0,
-            0,
-            canvas.width,
-            pageCanvas.height
+        if (options?.bold) {
+          doc.setFont("helvetica", "bold");
+        } else {
+          doc.setFont("helvetica", "normal");
+        }
+        doc.text(text, marginLeft, y);
+        y += lineHeight;
+      };
+
+      const weekStr = weeklySummary.week_start.slice(0, 10);
+      const dayKeys = Object.keys(runsByDay).sort();
+
+      // Title
+      doc.setFontSize(14);
+      addLine(`SAFMEDS Weekly Report — Week of ${weekStr}`, { bold: true });
+      doc.setFontSize(11);
+      addLine();
+
+      // Summary
+      addLine("Summary", { bold: true });
+      addLine(`Total trials: ${weeklySummary.total_trials}`);
+      addLine(
+        `Average correct: ${weeklySummary.avg_correct.toFixed(
+          1
+        )} | Average attempted: ${weeklySummary.avg_attempted.toFixed(1)}`
+      );
+      addLine(`Average accuracy: ${weeklySummary.avg_accuracy.toFixed(1)}%`);
+      addLine(
+        `Best single trial: ${weeklySummary.best_correct} correct (${weeklySummary.best_accuracy.toFixed(
+          1
+        )}%)`
+      );
+      addLine();
+
+      if (dayKeys.length === 0) {
+        addLine("No trials recorded for this week.");
+      } else {
+        // Per-day detail with chart + table-style text
+        dayKeys.forEach((day) => {
+          const runs = runsByDay[day];
+
+          addLine(`Day: ${day}`, { bold: true });
+          addLine(`Trials: ${runs.length}`);
+
+          // Build chart data for this day
+          const chartData = runs.map((run, idx) => ({
+            trial_number: idx + 1,
+            net_score: run.net_score,
+          }));
+
+          // Draw chart
+          y = drawNetScoreChart(
+            doc,
+            y,
+            pageHeight,
+            marginLeft,
+            chartData
           );
-        }
-        const pageData = pageCanvas.toDataURL("image/png");
-        pdf.addImage(pageData, "PNG", 0, 0, imgWidth, pdfHeight);
-        remainingHeight -= pdfHeight;
-        page += 1;
+
+          // Mini text header for tabular info
+          addLine(
+            "Trial  Correct  Incorrect  Net  Duration(s)  Deck",
+            { bold: true }
+          );
+
+          runs.forEach((run, idx) => {
+            const deckLabel = (run.deck ?? "").slice(0, 20);
+            const line =
+              `${String(idx + 1).padStart(2, " ")}      ` +
+              `${String(run.correct).padStart(3, " ")}      ` +
+              `${String(run.incorrect).padStart(3, " ")}      ` +
+              `${String(run.net_score).padStart(3, " ")}      ` +
+              `${run.duration_seconds ?? ""}      ` +
+              `${deckLabel}`;
+
+            addLine(line);
+          });
+
+          addLine();
+        });
       }
 
-      pdf.save(
+      doc.save(
         `safmeds_week_${weeklySummary.week_start
           .slice(0, 10)
           .replace(/-/g, "")}.pdf`
@@ -283,8 +406,8 @@ export default function SafmedsWeekPage() {
             </button>
           </div>
 
-          {/* ✅ Everything inside this div will be captured in the PDF */}
-          <div ref={reportRef} className="space-y-6 mt-2">
+          {/* On-screen report (summary + graphs + tables) */}
+          <div className="space-y-6 mt-2">
             {/* Weekly summary card */}
             <div className="border rounded-xl p-4 bg-white shadow-sm space-y-1">
               <h2 className="text-lg font-semibold">
@@ -302,7 +425,7 @@ export default function SafmedsWeekPage() {
               </p>
             </div>
 
-            {/* One graph + table per day */}
+            {/* One graph + table per day (screen only) */}
             {dayKeys.length === 0 ? (
               <p>No trials for this week yet.</p>
             ) : (
@@ -310,7 +433,6 @@ export default function SafmedsWeekPage() {
                 {dayKeys.map((day) => {
                   const runs = runsByDay[day];
 
-                  // Build chart data: trial number vs net_score
                   const chartData = runs.map((run, idx) => ({
                     trial_number: idx + 1,
                     net_score: run.net_score,
@@ -329,9 +451,9 @@ export default function SafmedsWeekPage() {
                       </h3>
                       <p className="text-xs text-gray-600 mb-2">
                         Graph shows <strong>net score</strong> (correct −
-                        incorrect) per trial for this day. This is what you can
-                        reference or describe in your weekly summary document.
+                        incorrect) per trial for this day.
                       </p>
+
                       <div className="w-full h-64">
                         <ResponsiveContainer width="100%" height="100%">
                           <LineChart data={chartData}>
@@ -356,7 +478,6 @@ export default function SafmedsWeekPage() {
                         </ResponsiveContainer>
                       </div>
 
-                      {/* Mini table of the day's runs */}
                       <div className="overflow-x-auto mt-3">
                         <table className="min-w-full text-xs">
                           <thead>

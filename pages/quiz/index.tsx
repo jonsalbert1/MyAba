@@ -46,6 +46,11 @@ function makeAllDefaultStats(): Record<DomainLetter, DomainStats> {
   return init as Record<DomainLetter, DomainStats>;
 }
 
+// Helper to build zero-padded subdomain code, e.g. A01, B03
+function makeSubdomainCode(letter: DomainLetter, index: number): string {
+  return `${letter}${index.toString().padStart(2, "0")}`;
+}
+
 export default function QuizHomePage() {
   const user = useUser();
   const router = useRouter();
@@ -71,17 +76,40 @@ export default function QuizHomePage() {
       const totalSubdomains = COUNTS[L];
 
       for (let i = 1; i <= totalSubdomains; i++) {
-        const code = `${L}${i}`;
-        const doneKey = `quiz:done:${L}:${code}`;
-        const accKey = `quiz:accuracy:${L}:${code}`;
+        // 🔢 New zero-padded code (A01, B03, etc.)
+        const codeNew = makeSubdomainCode(L, i);
+        // 🧩 Legacy code (A1, B3, etc.) for backward compatibility
+        const codeOld = `${L}${i}`;
 
-        const done = window.localStorage.getItem(doneKey) === "1";
-        if (done) completed += 1;
+        const doneKeyNew = `quiz:done:${L}:${codeNew}`;
+        const doneKeyOld = `quiz:done:${L}:${codeOld}`;
+        const accKeyNew = `quiz:accuracy:${L}:${codeNew}`;
+        const accKeyOld = `quiz:accuracy:${L}:${codeOld}`;
 
-        const accStr = window.localStorage.getItem(accKey);
+        // Prefer new keys, but fall back to old ones if present
+        const doneNew = window.localStorage.getItem(doneKeyNew);
+        const doneOld = window.localStorage.getItem(doneKeyOld);
+
+        let isDone = doneNew === "1" || doneOld === "1";
+
+        // Optional migration: if only old key exists, copy it to new
+        if (!doneNew && doneOld === "1") {
+          window.localStorage.setItem(doneKeyNew, "1");
+        }
+
+        if (isDone) completed += 1;
+
+        const accStrNew = window.localStorage.getItem(accKeyNew);
+        const accStrOld = window.localStorage.getItem(accKeyOld);
+        const accStr = accStrNew ?? accStrOld ?? null;
+
         if (accStr != null) {
           const val = Number(accStr);
           if (Number.isFinite(val)) {
+            // Optional migration for accuracy as well
+            if (!accStrNew && accStrOld != null) {
+              window.localStorage.setItem(accKeyNew, accStrOld);
+            }
             bestAcc = bestAcc == null ? val : Math.max(bestAcc, val);
           }
         }

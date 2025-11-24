@@ -5,7 +5,14 @@ import { useSupabaseClient, useUser } from "@supabase/auth-helpers-react";
 /* =========================
    Types
 ========================= */
-type Card = { id: string; term: string; definition: string; deck?: string | null };
+type Card = {
+  id: string;
+  term: string;
+  definition: string;
+  deck?: string | null;
+  class_code?: string | null;
+  deck_number?: number | null;
+};
 
 type Attempt = {
   timestampISO: string;
@@ -18,7 +25,7 @@ type Attempt = {
 };
 
 interface SafmedsMobileProps {
-  deckName?: string; // optional admin label
+  deckName?: string; // optional label for runs table (kept for now)
 }
 
 /* =========================
@@ -28,7 +35,8 @@ const DEMO_CARDS: Card[] = [
   {
     id: "1",
     term: "Interobserver Agreement (IOA)",
-    definition: "Degree to which two observers record the same events in the same way.",
+    definition:
+      "Degree to which two observers record the same events in the same way.",
   },
   {
     id: "2",
@@ -77,6 +85,12 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
   const [duration, setDuration] = useState<number>(60); // 30 or 60
   const [shuffleOnStart, setShuffleOnStart] = useState<boolean>(true);
 
+  // Class / deck selection (like flashcards)
+  const [classCode, setClassCode] = useState<string>("");
+  const [deckNum, setDeckNum] = useState<number>(1);
+  const [classOptions, setClassOptions] = useState<string[]>([]);
+  const [deckNumOptions, setDeckNumOptions] = useState<number[]>([1]);
+
   // Cards
   const [cards, setCards] = useState<Card[]>(DEMO_CARDS);
   const [index, setIndex] = useState<number>(0);
@@ -115,27 +129,107 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
   // For UI feedback when not authenticated / session expired
   const [authWarning, setAuthWarning] = useState<string | null>(null);
 
+  // For simple “loading cards” status
+  const [loadingCards, setLoadingCards] = useState<boolean>(false);
+
   /* =========================
-     Load cards from API
+     Meta: load class_codes + deck_numbers
   ========================= */
   useEffect(() => {
     let cancelled = false;
 
-    (async () => {
+    async function loadMeta() {
       try {
-        const res = await fetch("/api/flashcards?limit=2000", {
+        const resp = await fetch("/api/flashcards/meta", { cache: "no-store" });
+        if (!resp.ok) return;
+        const json = await resp.json();
+        if (cancelled) return;
+
+        const classesFromDb: string[] = Array.isArray(json.class_codes)
+          ? json.class_codes.filter(
+              (x: any) =>
+                typeof x === "string" &&
+                x.trim() !== "" &&
+                x.trim().toUpperCase() !== "DEFAULT"
+            )
+          : [];
+
+        const deckNumsFromDb: number[] = Array.isArray(json.deck_numbers)
+          ? json.deck_numbers.filter((x: any) => typeof x === "number")
+          : [];
+
+        setClassOptions(Array.from(new Set(classesFromDb)).sort());
+        setDeckNumOptions((prev) => {
+          const set = new Set(prev);
+          deckNumsFromDb.forEach((n) => set.add(n));
+          if (!set.has(1)) set.add(1);
+          return Array.from(set).sort((a, b) => a - b);
+        });
+      } catch {
+        // keep defaults if meta fails
+      }
+    }
+
+    loadMeta();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // When class options arrive and none is chosen yet, pick the first
+  useEffect(() => {
+    if (!classCode && classOptions.length > 0) {
+      setClassCode(classOptions[0]);
+    }
+  }, [classCode, classOptions]);
+
+  /* =========================
+     Load cards from flashcards API
+     - filters by class_code + deck_number (like Flashcards page)
+  ========================= */
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCards() {
+      if (!classCode) {
+        // Wait until we know which class to use
+        return;
+      }
+
+      setLoadingCards(true);
+      try {
+        const p = new URLSearchParams();
+        p.set("limit", "2000");
+        p.set("class_code", classCode);
+        if (deckNum) p.set("deck_number", String(deckNum));
+
+        const res = await fetch(`/api/flashcards?${p.toString()}`, {
           credentials: "include",
         });
         if (!res.ok) throw new Error("flashcards api error");
 
         const json = await res.json();
-        const list: Card[] =
+        const rawList: any[] =
           Array.isArray(json?.cards) && json.cards.length
-            ? json.cards.map((c: any) => ({
+            ? json.cards
+            : Array.isArray(json?.data) && json.data.length
+            ? json.data
+            : [];
+
+        const list: Card[] =
+          rawList.length > 0
+            ? rawList.map((c: any) => ({
                 id: String(c.id),
                 term: String(c.term ?? ""),
                 definition: String(c.definition ?? ""),
                 deck: c.deck ?? null,
+                class_code: c.class_code ?? null,
+                deck_number:
+                  typeof c.deck_number === "number"
+                    ? c.deck_number
+                    : c.deck_number
+                    ? Number(c.deck_number)
+                    : null,
               }))
             : DEMO_CARDS;
 
@@ -150,13 +244,16 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
           setIndex(0);
           setShowBack(false);
         }
+      } finally {
+        if (!cancelled) setLoadingCards(false);
       }
-    })();
+    }
 
+    loadCards();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [classCode, deckNum]);
 
   /* =========================
      Timer tick
@@ -211,7 +308,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
   }, [running, index]);
 
   /* =========================
-     Server: fetch today’s runs (direct from Supabase; RLS-safe)
+     Server: fetch today’s runs
   ========================= */
   async function fetchToday() {
     try {
@@ -227,9 +324,11 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
 
       if (error) throw error;
 
-      // Stable sort by time, then assign ordinal_today = 1..N
       const sorted = (data ?? []).slice().sort((a: any, b: any) => {
-        return new Date(a.run_started_at).getTime() - new Date(b.run_started_at).getTime();
+        return (
+          new Date(a.run_started_at).getTime() -
+          new Date(b.run_started_at).getTime()
+        );
       });
 
       const mapped: Attempt[] = sorted.map((v: any, idx: number) => {
@@ -312,13 +411,11 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
 
   /* =========================
      Save run to server
-     - Always fetch a fresh token to avoid "Auth session missing!"
   ========================= */
   async function saveRun(auto = false) {
     try {
       const now = new Date().toISOString();
 
-      // Get a fresh access token right before calling the API
       const { data: sessionRes } = await supabase.auth.getSession();
       const token = sessionRes?.session?.access_token ?? null;
 
@@ -330,7 +427,10 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
       }
 
       const body = {
-        deck: deckName || null,
+        // keep deckName for now so we don't break existing rows
+        deck:
+          deckName ||
+          (classCode ? `${classCode}-deck-${deckNum || 1}` : null),
         duration_seconds: duration,
         correct: correctRef.current,
         incorrect: incorrectRef.current,
@@ -357,7 +457,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
     } catch (e) {
       console.warn("Save run error:", e);
     } finally {
-      await fetchToday(); // refresh from server truth
+      await fetchToday();
       if (!auto) {
         // optional toast hook could go here
       }
@@ -535,7 +635,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
       </header>
 
       {/* Controls */}
-      <section className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+      <section className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <label>
           <span className="block text-xs font-medium text-gray-600">
             Duration
@@ -563,14 +663,46 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
           <span className="text-sm">Shuffle on start</span>
         </label>
 
-        <div className="col-span-2 sm:col-span-1">
+        <label className="col-span-2 sm:col-span-1">
           <span className="block text-xs font-medium text-gray-600">
-            Deck
+            Class
           </span>
-          <div className="mt-1 w-full rounded-xl border px-3 py-2 text-sm text-gray-700">
-            {deckName || "(admin-controlled)"}
-          </div>
-        </div>
+          <select
+            value={classCode}
+            onChange={(e) => setClassCode(e.target.value)}
+            className="mt-1 w-full rounded-xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            {classOptions.length === 0 ? (
+              <option value="">(no classes)</option>
+            ) : (
+              classOptions.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))
+            )}
+          </select>
+        </label>
+
+        <label className="col-span-2 sm:col-span-1">
+          <span className="block text-xs font-medium text-gray-600">
+            Deck #
+          </span>
+          <select
+            value={deckNum}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              setDeckNum(!Number.isFinite(n) || n <= 0 ? 1 : n);
+            }}
+            className="mt-1 w-full rounded-xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            {deckNumOptions.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </label>
       </section>
 
       {/* Daily target indicator */}
@@ -608,11 +740,9 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
           <span>
             Card {index + 1} of {cards.length}
           </span>
-          {!!deckName && (
-            <span className="rounded-full bg-gray-100 px-2 py-0.5">
-              {deckName}
-            </span>
-          )}
+          <span className="rounded-full bg-gray-100 px-2 py-0.5">
+            {(classCode || "Class")} • #{deckNum}
+          </span>
         </div>
 
         <div className="min-h-[140px] cursor-pointer" onClick={flip}>
@@ -628,6 +758,11 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
           <p className="mt-3 text-[11px] text-gray-500">
             {running ? "Tap / Space to flip" : "Start to enable flip & scoring"}
           </p>
+          {loadingCards && (
+            <p className="mt-1 text-[11px] text-blue-500">
+              Loading cards for {classCode || "…"} deck #{deckNum}…
+            </p>
+          )}
         </div>
 
         {/* Correct / Incorrect under the card */}
@@ -673,14 +808,12 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
         </div>
         <div className="rounded-xl border p-2">
           <div className="text-gray-500">Accuracy</div>
-          <div className="text-lg font-semibold tabular-nums">
-            {accuracy}%
-          </div>
+          <div className="text-lg font-semibold tabular-nums">{accuracy}%</div>
         </div>
         <div className="rounded-xl border p-2">
-          <div className="text-gray-500">Deck</div>
+          <div className="text-gray-500">Set</div>
           <div className="text-lg font-semibold">
-            {deckName || "(admin)"}
+            {(classCode || "Class") + " #" + deckNum}
           </div>
         </div>
       </section>
@@ -710,9 +843,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
       <section className="mb-4 rounded-2xl border p-3">
         <div className="mb-2 flex items-center justify-between">
           <h3 className="text-sm font-semibold">Today’s attempts</h3>
-          <div className="text-xs text-gray-500">
-            {attempts.length} run(s)
-          </div>
+          <div className="text-xs text-gray-500">{attempts.length} run(s)</div>
         </div>
         <div className="w-full rounded-xl border bg-white">
           {attempts.slice(-5).length === 0 ? (

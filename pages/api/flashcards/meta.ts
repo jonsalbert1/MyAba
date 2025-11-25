@@ -2,94 +2,111 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-type DeckEntry = {
+type DeckMeta = {
   class_code: string;
   deck_number: number;
 };
 
-type ApiResponse =
-  | { ok: true; mode: "cards"; data: any[] }
-  | { ok: true; mode: "decks"; decks: DeckEntry[] }
-  | { ok: false; error: string };
+type Card = {
+  id: string;
+  term: string;
+  definition: string;
+  class_code: string;
+  deck_number: number;
+};
+
+type MetaResponse =
+  | {
+      ok: true;
+      mode: "decks";
+      decks: DeckMeta[];
+    }
+  | {
+      ok: true;
+      mode: "cards";
+      data: Card[];
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+const TABLE = "cards";
 
 export default async function handler(
   req: NextApiRequest,
-  res: NextApiResponse<ApiResponse>
+  res: NextApiResponse<MetaResponse>
 ) {
   if (req.method !== "GET") {
     res.setHeader("Allow", ["GET"]);
-    return res.status(405).json({ ok: false, error: "Method Not Allowed" });
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
   try {
     const { class_code, deck_number } = req.query;
 
-    // ─────────────────────────────
-    // MODE 1: specific deck → return CARDS
-    // ─────────────────────────────
-    if (class_code !== undefined && deck_number !== undefined) {
+    // -------------------------------------------------------------------
+    // 1) If class_code + deck_number are provided → return CARDS mode
+    // -------------------------------------------------------------------
+    if (class_code && deck_number) {
       const cc = String(class_code);
       const dn = Number(deck_number);
-
-      if (!cc || cc === "undefined" || Number.isNaN(dn)) {
-        return res.status(400).json({
-          ok: false,
-          error: `Invalid class_code (${cc}) or deck_number (${deck_number})`,
-        });
-      }
 
       console.log("flashcards/meta cards mode", { cc, dn });
 
       const { data, error } = await supabaseAdmin
-        .from("cards")
-        .select("id, term, definition, class_code, deck_number")
+        .from(TABLE)
+        .select(
+          "id, term, definition, class_code, deck_number"
+        )
         .eq("class_code", cc)
         .eq("deck_number", dn)
-        .order("id", { ascending: true });
+        .order("term", { ascending: true });
 
       if (error) {
-        console.error("flashcards/meta (cards) error:", error);
-        return res.status(500).json({ ok: false, error: error.message });
+        console.error("cards query error", error);
+        return res
+          .status(500)
+          .json({ ok: false, error: error.message ?? "Error loading cards" });
       }
 
       return res.status(200).json({
         ok: true,
         mode: "cards",
-        data: data ?? [],
+        data: (data ?? []) as Card[],
       });
     }
 
-    // ─────────────────────────────
-    // MODE 2: no params → return unique DECK LIST
-    // ─────────────────────────────
+    // -------------------------------------------------------------------
+    // 2) Otherwise → return DECKS mode (distinct class_code/deck_number)
+    // -------------------------------------------------------------------
+    console.log("flashcards/meta decks mode");
+
     const { data, error } = await supabaseAdmin
-      .from("cards")
+      .from(TABLE)
       .select("class_code, deck_number")
+      .not("class_code", "is", null)
+      .not("deck_number", "is", null)
       .order("class_code", { ascending: true })
       .order("deck_number", { ascending: true });
 
     if (error) {
-      console.error("flashcards/meta (decks) error:", error);
-      return res.status(500).json({ ok: false, error: error.message });
+      console.error("decks query error", error);
+      return res
+        .status(500)
+        .json({ ok: false, error: error.message ?? "Error loading decks" });
     }
 
-    type Row = {
-      class_code: string | null;
-      deck_number: number | null;
-    };
+    const rows = (data ?? []) as { class_code: string; deck_number: number }[];
 
-    const rows = (data ?? []) as Row[];
-
+    // JS-side dedupe of (class_code, deck_number)
     const seen = new Set<string>();
-    const decks: DeckEntry[] = [];
-
+    const decks: DeckMeta[] = [];
     for (const row of rows) {
       if (!row.class_code || row.deck_number == null) continue;
-
       const key = `${row.class_code}::${row.deck_number}`;
       if (seen.has(key)) continue;
       seen.add(key);
-
       decks.push({
         class_code: row.class_code,
         deck_number: row.deck_number,
@@ -102,9 +119,10 @@ export default async function handler(
       decks,
     });
   } catch (e: any) {
-    console.error("flashcards/meta exception:", e);
-    return res
-      .status(500)
-      .json({ ok: false, error: e?.message ?? "Unknown error" });
+    console.error("flashcards/meta unexpected error", e);
+    return res.status(500).json({
+      ok: false,
+      error: e?.message ?? "Unexpected server error",
+    });
   }
 }

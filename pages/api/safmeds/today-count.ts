@@ -1,72 +1,74 @@
 // pages/api/safmeds/today-count.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import { createPagesServerClient } from "@supabase/auth-helpers-nextjs";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-type OkResponse = {
-  ok: true;
-  used: number;
-  remaining: number;
+type Summary = {
+  runs: number;
+  correct: number;
+  incorrect: number;
 };
 
-type ErrorResponse = {
-  ok: false;
-  error: string;
-};
-
-type ApiResponse = OkResponse | ErrorResponse;
-
-const DAILY_LIMIT = 5;
+type ApiResponse =
+  | { ok: true; today: Summary }
+  | { ok: false; error: string };
 
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse<ApiResponse>
 ) {
   if (req.method !== "GET") {
-    res.setHeader("Allow", "GET");
-    return res.status(405).json({ ok: false, error: "Use GET" });
-  }
-
-  // Supabase client bound to this request/response
-  const supabase = createPagesServerClient({ req, res });
-
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user) {
+    res.setHeader("Allow", ["GET"]);
     return res
-      .status(401)
-      .json({ ok: false, error: "Not authenticated" });
+      .status(405)
+      .json({ ok: false, error: "Method Not Allowed" });
   }
 
-  // Compute today's start/end (local to server)
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(start.getDate() + 1);
+  const { user_id } = req.query;
 
-  // Count runs for this user within today
-  const { count, error } = await supabase
-    .from("safmeds_runs")
-    .select("*", { head: true, count: "exact" })
-    .eq("user_id", user.id)
-    .gte("run_started_at", start.toISOString())
-    .lt("run_started_at", end.toISOString());
+  if (!user_id || typeof user_id !== "string") {
+    return res
+      .status(400)
+      .json({ ok: false, error: "Missing user_id" });
+  }
 
-  if (error) {
-    console.error("SAFMEDS today-count error:", error);
+  try {
+    const now = new Date();
+    const startOfToday = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate()
+    ).toISOString();
+
+    const { data, error } = await supabaseAdmin
+      .from("safmeds_runs")
+      .select("correct, incorrect, created_at")
+      .eq("user_id", user_id)
+      .gte("created_at", startOfToday);
+
+    if (error) {
+      console.error("today-count error:", error);
+      return res
+        .status(500)
+        .json({ ok: false, error: error.message });
+    }
+
+    const summary: Summary = {
+      runs: 0,
+      correct: 0,
+      incorrect: 0,
+    };
+
+    for (const row of data ?? []) {
+      summary.runs += 1;
+      summary.correct += row.correct ?? 0;
+      summary.incorrect += row.incorrect ?? 0;
+    }
+
+    return res.status(200).json({ ok: true, today: summary });
+  } catch (e: any) {
+    console.error("today-count exception:", e);
     return res
       .status(500)
-      .json({ ok: false, error: "Failed to load today count" });
+      .json({ ok: false, error: e?.message ?? "Unknown error" });
   }
-
-  const used = count ?? 0;
-  const remaining = Math.max(0, DAILY_LIMIT - used);
-
-  return res.status(200).json({
-    ok: true,
-    used,
-    remaining,
-  });
 }

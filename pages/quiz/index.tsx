@@ -1,13 +1,16 @@
 // pages/quiz/index.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { useUser } from "@supabase/auth-helpers-react";
-import Link from "next/link";
-import { getDomainTitle } from "@/lib/tco";
+import { getDomainTitle, getSubdomainText } from "@/lib/tco";
+
+/* =========================
+   Types / constants
+========================= */
 
 type DomainLetter = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I";
 
-const COUNTS: Record<DomainLetter, number> = {
+const DOMAIN_COUNTS: Record<DomainLetter, number> = {
   A: 5,
   B: 24,
   C: 12,
@@ -19,320 +22,360 @@ const COUNTS: Record<DomainLetter, number> = {
   I: 7,
 };
 
-type DomainStats = {
-  letter: DomainLetter;
-  title: string;
-  totalSubdomains: number;
-  completedSubdomains: number;
+const DOMAIN_ORDER: DomainLetter[] = [
+  "A",
+  "B",
+  "C",
+  "D",
+  "E",
+  "F",
+  "G",
+  "H",
+  "I",
+];
+
+type SubdomainProgress = {
+  code: string; // e.g., "B07"
+  done: boolean;
   bestAccuracy: number | null;
+  hasLive: boolean;
 };
 
-function makeDefaultStats(letter: DomainLetter): DomainStats {
-  const totalSubdomains = COUNTS[letter];
+type DomainProgress = {
+  domain: DomainLetter;
+  title: string;
+  subdomains: SubdomainProgress[];
+  completedCount: number;
+  avgBestAccuracy: number | null;
+  nextCode: string | null; // first subdomain not done
+};
+
+/* =========================
+   Helpers
+========================= */
+
+function buildCode(domain: DomainLetter, index: number): string {
+  return `${domain}${index.toString().padStart(2, "0")}`;
+}
+
+function loadDomainProgress(domain: DomainLetter): DomainProgress {
+  const count = DOMAIN_COUNTS[domain];
+  const subdomains: SubdomainProgress[] = [];
+
+  for (let i = 1; i <= count; i++) {
+    const code = buildCode(domain, i);
+    const doneKey = `quiz:done:${domain}:${code}`;
+    const accKey = `quiz:accuracy:${domain}:${code}`;
+    const liveKey = `quiz:live:${domain}:${code}`;
+
+    let done = false;
+    let bestAccuracy: number | null = null;
+    let hasLive = false;
+
+    try {
+      done = window.localStorage.getItem(doneKey) === "1";
+
+      const accRaw = window.localStorage.getItem(accKey);
+      if (accRaw != null && accRaw !== "") {
+        const n = Number(accRaw);
+        if (Number.isFinite(n)) {
+          bestAccuracy = n;
+        }
+      }
+
+      const liveRaw = window.localStorage.getItem(liveKey);
+      if (liveRaw) {
+        try {
+          const parsed = JSON.parse(liveRaw);
+          if (
+            typeof parsed?.answeredCount === "number" &&
+            parsed.answeredCount > 0
+          ) {
+            hasLive = true;
+          }
+        } catch {
+          // ignore parse errors
+        }
+      }
+    } catch {
+      // ignore localStorage errors
+    }
+
+    subdomains.push({
+      code,
+      done,
+      bestAccuracy,
+      hasLive,
+    });
+  }
+
+  const completed = subdomains.filter((s) => s.done);
+  const completedCount = completed.length;
+
+  let avgBest: number | null = null;
+  if (completed.length > 0) {
+    const sum = completed.reduce(
+      (total, s) => total + (s.bestAccuracy ?? 0),
+      0
+    );
+    avgBest = sum / completed.length;
+  }
+
+  // First subdomain that is NOT done is the "next up"
+  const next = subdomains.find((s) => !s.done) ?? null;
+  const nextCode = next ? next.code : null;
+
   return {
-    letter,
-    title: getDomainTitle(letter) ?? "",
-    totalSubdomains,
-    completedSubdomains: 0,
-    bestAccuracy: null,
+    domain,
+    title: getDomainTitle(domain) ?? `Domain ${domain}`,
+    subdomains,
+    completedCount,
+    avgBestAccuracy: avgBest,
+    nextCode,
   };
 }
 
-function makeAllDefaultStats(): Record<DomainLetter, DomainStats> {
-  const init: Partial<Record<DomainLetter, DomainStats>> = {};
-  (Object.keys(COUNTS) as DomainLetter[]).forEach((L) => {
-    init[L] = makeDefaultStats(L);
-  });
-  return init as Record<DomainLetter, DomainStats>;
-}
-
-// Helper to build zero-padded subdomain code, e.g. A01, B03
-function makeSubdomainCode(letter: DomainLetter, index: number): string {
-  return `${letter}${index.toString().padStart(2, "0")}`;
-}
+/* =========================
+   Component
+========================= */
 
 export default function QuizHomePage() {
-  const user = useUser();
   const router = useRouter();
-  const isSignedIn = !!user;
+  const user = useUser();
 
-  const [stats, setStats] = useState<Record<DomainLetter, DomainStats>>(
-    () => makeAllDefaultStats()
-  );
-  const [isResetting, setIsResetting] = useState(false);
+  const [progress, setProgress] = useState<DomainProgress[]>([]);
+  const [loadedLocal, setLoadedLocal] = useState(false);
 
-  // Hydrate from localStorage on the client (ONLY when signed in)
+  // Load from localStorage on mount (client-side only)
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (!user) return; // no progress when logged out
 
-    const updated: Partial<Record<DomainLetter, DomainStats>> = {};
-
-    (Object.keys(COUNTS) as DomainLetter[]).forEach((L) => {
-      const base = makeDefaultStats(L);
-      let completed = 0;
-      let bestAcc: number | null = null;
-
-      const totalSubdomains = COUNTS[L];
-
-      for (let i = 1; i <= totalSubdomains; i++) {
-        // 🔢 New zero-padded code (A01, B03, etc.)
-        const codeNew = makeSubdomainCode(L, i);
-        // 🧩 Legacy code (A1, B3, etc.) for backward compatibility
-        const codeOld = `${L}${i}`;
-
-        const doneKeyNew = `quiz:done:${L}:${codeNew}`;
-        const doneKeyOld = `quiz:done:${L}:${codeOld}`;
-        const accKeyNew = `quiz:accuracy:${L}:${codeNew}`;
-        const accKeyOld = `quiz:accuracy:${L}:${codeOld}`;
-
-        // Prefer new keys, but fall back to old ones if present
-        const doneNew = window.localStorage.getItem(doneKeyNew);
-        const doneOld = window.localStorage.getItem(doneKeyOld);
-
-        let isDone = doneNew === "1" || doneOld === "1";
-
-        // Optional migration: if only old key exists, copy it to new
-        if (!doneNew && doneOld === "1") {
-          window.localStorage.setItem(doneKeyNew, "1");
-        }
-
-        if (isDone) completed += 1;
-
-        const accStrNew = window.localStorage.getItem(accKeyNew);
-        const accStrOld = window.localStorage.getItem(accKeyOld);
-        const accStr = accStrNew ?? accStrOld ?? null;
-
-        if (accStr != null) {
-          const val = Number(accStr);
-          if (Number.isFinite(val)) {
-            // Optional migration for accuracy as well
-            if (!accStrNew && accStrOld != null) {
-              window.localStorage.setItem(accKeyNew, accStrOld);
-            }
-            bestAcc = bestAcc == null ? val : Math.max(bestAcc, val);
-          }
-        }
-      }
-
-      updated[L] = {
-        letter: L,
-        title: base.title,
-        totalSubdomains,
-        completedSubdomains: completed,
-        bestAccuracy: bestAcc,
-      };
-    });
-
-    setStats((prev) => ({ ...prev, ...(updated as any) }));
-  }, [user]);
-
-  const domains = useMemo(
-    () => (Object.keys(COUNTS) as DomainLetter[]).map((L) => stats[L]),
-    [stats]
-  );
-
-  // Overall progress (only meaningful if logged in)
-  const overall = useMemo(() => {
-    const totalSubdomains = (Object.keys(COUNTS) as DomainLetter[]).reduce(
-      (acc, L) => acc + COUNTS[L],
-      0
+    const all: DomainProgress[] = DOMAIN_ORDER.map((d) =>
+      loadDomainProgress(d)
     );
-    const completedSubdomains = domains.reduce(
-      (acc, d) => acc + d.completedSubdomains,
-      0
-    );
-    const percent = totalSubdomains
-      ? Math.round((completedSubdomains / totalSubdomains) * 100)
-      : 0;
+    setProgress(all);
+    setLoadedLocal(true);
+  }, []);
 
-    return { totalSubdomains, completedSubdomains, percent };
-  }, [domains]);
-
-  /** ⬇️ Route to /quiz/domain?domain=A etc */
-  function handleDomainClick(letter: DomainLetter) {
+  const handleOpenSubdomain = (domain: DomainLetter, code: string) => {
     router.push({
-      pathname: "/quiz/domain",
-      query: { domain: letter },
+      pathname: "/quiz/runner",
+      query: { code },
     });
-  }
+  };
 
-  /** 🔄 Clear all quiz progress (Supabase + localStorage) */
-  async function handleResetAll() {
-    if (!isSignedIn) return;
-    if (typeof window !== "undefined") {
-      const sure = window.confirm(
-        "This will clear all quiz progress (all domains and subdomains) and reset best scores. Continue?"
-      );
-      if (!sure) return;
+  const handleResetAllLocal = () => {
+    if (typeof window === "undefined") return;
+    if (
+      !window.confirm(
+        "This will clear all local quiz progress (including best scores and in-progress states). Server history will remain. Continue?"
+      )
+    ) {
+      return;
     }
 
-    setIsResetting(true);
     try {
-      // Call API to delete rows for this user
-      const res = await fetch("/api/quiz/reset-progress", {
-        method: "POST",
-      });
-      if (!res.ok) {
-        console.error("Reset progress failed", await res.text());
-      }
-
-      // Clear localStorage keys used for quiz progress
-      if (typeof window !== "undefined") {
-        const keysToRemove: string[] = [];
-        for (let i = 0; i < window.localStorage.length; i++) {
-          const key = window.localStorage.key(i);
-          if (key && key.startsWith("quiz:")) {
-            keysToRemove.push(key);
-          }
+      const keysToRemove: string[] = [];
+      Object.keys(window.localStorage).forEach((key) => {
+        if (
+          key.startsWith("quiz:done:") ||
+          key.startsWith("quiz:accuracy:") ||
+          key.startsWith("quiz:live:")
+        ) {
+          keysToRemove.push(key);
         }
-        keysToRemove.forEach((k) => window.localStorage.removeItem(k));
-      }
-
-      // Reset in-memory stats
-      setStats(makeAllDefaultStats());
-    } finally {
-      setIsResetting(false);
+      });
+      keysToRemove.forEach((k) => window.localStorage.removeItem(k));
+    } catch {
+      // ignore
     }
-  }
+
+    // Reload view after reset
+    const all: DomainProgress[] = DOMAIN_ORDER.map((d) =>
+      loadDomainProgress(d)
+    );
+    setProgress(all);
+  };
+
+  const displayName =
+    user?.user_metadata?.full_name ||
+    user?.email ||
+    "there";
 
   return (
-    <main className="mx-auto max-w-4xl px-4 py-8">
-      {/* Header / hero */}
-      <header className="mb-6">
-        <h1 className="text-3xl font-semibold tracking-tight text-blue-900">
-          myABA.app Quiz Home
-        </h1>
-        <p className="mt-2 text-sm text-gray-600">
-          Work through BCBA® Task List Domains A–I with scenario-based
-          questions. Progress is tracked per subdomain when you&apos;re signed
-          in.
+    <main className="mx-auto max-w-5xl px-4 py-8 space-y-6">
+      {/* Header / greeting */}
+      <header className="space-y-2">
+        <h1 className="text-3xl font-semibold">BCBA Quiz Suite</h1>
+        <p className="text-sm text-gray-700">
+          Welcome, <span className="font-semibold">{displayName}</span>. Choose
+          a domain and subdomain to practice. Your best scores and in-progress
+          quizzes are tracked locally and on the server.
         </p>
-
-        {!isSignedIn && (
-          <div className="mt-4 flex flex-wrap items-center gap-3">
-            <Link
-              href="/login"
-              className="rounded-md border bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-            >
-              Sign in to start
-            </Link>
-            <p className="text-xs text-gray-500">
-              You can browse domains and subdomains while signed out, but you
-              must sign in to take quizzes and save progress.
-            </p>
-          </div>
-        )}
       </header>
 
-      {/* Overall progress */}
-      <section className="mb-6 rounded-lg border p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
-          <div>
-            <span className="font-medium">Overall domains progress</span>{" "}
-            {isSignedIn ? (
-              <span className="text-gray-600">
-                · Completed{" "}
-                <strong>{overall.completedSubdomains}</strong> /{" "}
-                {overall.totalSubdomains} subdomains
-              </span>
-            ) : (
-              <span className="text-gray-600">
-                · Sign in to track progress across subdomains.
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-3">
-            {isSignedIn && (
-              <div className="text-xs text-gray-500">
-                {overall.percent}% complete
-              </div>
-            )}
-            {isSignedIn && (
-              <button
-                type="button"
-                onClick={handleResetAll}
-                disabled={isResetting}
-                className="rounded-md border px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-60"
-              >
-                {isResetting ? "Clearing…" : "Reset all quiz progress"}
-              </button>
-            )}
-          </div>
+      {/* Controls row */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-xs text-gray-500">
+          Progress shown from local device storage.
         </div>
+        <button
+          type="button"
+          onClick={handleResetAllLocal}
+          className="rounded-md border border-red-300 px-3 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
+        >
+          Reset all local quiz data
+        </button>
+      </div>
 
-        <div className="mt-2 h-2 w-full overflow-hidden rounded bg-gray-200">
-          <div
-            className={`h-2 rounded transition-all ${
-              isSignedIn ? "bg-blue-500" : "bg-gray-300"
-            }`}
-            style={{
-              width: isSignedIn ? `${overall.percent}%` : "0%",
-            }}
-          />
-        </div>
-      </section>
-
-      {/* Domains grid */}
-      <section className="grid gap-4 md:grid-cols-3">
-        {(Object.keys(COUNTS) as DomainLetter[]).map((L) => {
-          const d = stats[L];
-          const completionPct = d.totalSubdomains
-            ? Math.round((d.completedSubdomains / d.totalSubdomains) * 100)
-            : 0;
+      {/* Domains summary cards */}
+      <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {progress.map((dom) => {
+          const totalSubs = DOMAIN_COUNTS[dom.domain];
+          const done = dom.completedCount;
+          const percentDone =
+            totalSubs > 0 ? Math.round((done / totalSubs) * 100) : 0;
 
           return (
-            <button
-              key={d.letter}
-              type="button"
-              onClick={() => handleDomainClick(d.letter)}
-              className="group flex flex-col items-stretch rounded-xl border bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+            <div
+              key={dom.domain}
+              className="flex flex-col rounded-xl border bg-white p-4 shadow-sm"
             >
-              <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="flex items-center justify-between gap-2">
                 <div>
-                  <div className="flex items-center gap-2">
-                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-900 text-sm font-semibold text-white">
-                      {d.letter}
-                    </span>
-                    <h2 className="text-sm font-semibold">
-                      Domain {d.letter}
-                    </h2>
-                  </div>
-                  {d.title && (
-                    <p className="mt-1 text-xs text-gray-600">{d.title}</p>
-                  )}
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    Domain {dom.domain}
+                  </p>
+                  <p className="text-sm font-medium text-gray-900">
+                    {dom.title}
+                  </p>
                 </div>
-                {isSignedIn && (
-                  <div className="text-right text-[11px] text-gray-500">
-                    <div>
-                      {d.completedSubdomains} / {d.totalSubdomains} done
-                    </div>
-                    <div>
-                      Best:{" "}
-                      {d.bestAccuracy != null ? `${d.bestAccuracy}%` : "—"}
-                    </div>
+                <div className="text-right text-xs text-gray-500">
+                  <div>
+                    Completed:{" "}
+                    <span className="font-semibold">
+                      {done}/{totalSubs}
+                    </span>
                   </div>
-                )}
+                  <div>
+                    Avg best:{" "}
+                    <span className="font-semibold">
+                      {dom.avgBestAccuracy != null
+                        ? `${dom.avgBestAccuracy.toFixed(0)}%`
+                        : "—"}
+                    </span>
+                  </div>
+                </div>
               </div>
 
-              {/* Per-domain progress bar */}
-              <div className="mt-1 h-1.5 w-full overflow-hidden rounded bg-gray-200">
+              <div className="mt-3 h-1.5 w-full overflow-hidden rounded bg-gray-200">
                 <div
-                  className={`h-1.5 rounded transition-all ${
-                    isSignedIn ? "bg-green-500" : "bg-gray-300"
-                  }`}
-                  style={{
-                    width: isSignedIn ? `${completionPct}%` : "0%",
-                  }}
+                  className="h-1.5 rounded bg-blue-600 transition-all"
+                  style={{ width: `${percentDone}%` }}
                 />
               </div>
 
-              <div className="mt-3 text-xs text-gray-600">
-                <span className="font-medium">Tap to view subdomains</span>
-              </div>
-            </button>
+              {dom.nextCode && (
+                <button
+                  type="button"
+                  onClick={() => handleOpenSubdomain(dom.domain, dom.nextCode!)}
+                  className="mt-3 inline-flex items-center justify-center rounded-md border border-blue-600 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+                >
+                  Next up: {dom.nextCode}
+                </button>
+              )}
+            </div>
           );
         })}
+      </section>
+
+      {/* Detailed TOC table */}
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold">Subdomain table of contents</h2>
+        {!loadedLocal && (
+          <p className="text-xs text-gray-500">
+            Loading local progress…
+          </p>
+        )}
+
+        {progress.map((dom) => (
+          <div
+            key={`table-${dom.domain}`}
+            className="overflow-hidden rounded-xl border bg-white shadow-sm"
+          >
+            <div className="border-b bg-gray-50 px-3 py-2 text-sm font-semibold">
+              Domain {dom.domain} · {dom.title}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-xs">
+                <thead>
+                  <tr className="border-b bg-gray-50 text-left">
+                    <th className="px-2 py-1">Code</th>
+                    <th className="px-2 py-1">Subdomain</th>
+                    <th className="px-2 py-1">Status</th>
+                    <th className="px-2 py-1 text-right">Best</th>
+                    <th className="px-2 py-1 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dom.subdomains.map((sub) => {
+                    const text = getSubdomainText(sub.code) ?? sub.code;
+
+                    let statusLabel = "Not started";
+                    let statusClass =
+                      "inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-700";
+
+                    if (sub.done) {
+                      statusLabel = "Completed";
+                      statusClass =
+                        "inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700";
+                    } else if (sub.hasLive) {
+                      statusLabel = "In progress";
+                      statusClass =
+                        "inline-flex rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700";
+                    }
+
+                    let buttonLabel = "Start";
+                    if (sub.done) buttonLabel = "Retake";
+                    else if (sub.hasLive) buttonLabel = "Continue";
+
+                    return (
+                      <tr key={sub.code} className="border-b last:border-0">
+                        <td className="px-2 py-1 align-top font-mono text-[11px]">
+                          {sub.code}
+                        </td>
+                        <td className="px-2 py-1 align-top">
+                          <div className="max-w-xl whitespace-pre-line">
+                            {text}
+                          </div>
+                        </td>
+                        <td className="px-2 py-1 align-top">
+                          <span className={statusClass}>{statusLabel}</span>
+                        </td>
+                        <td className="px-2 py-1 align-top text-right">
+                          {sub.bestAccuracy != null
+                            ? `${sub.bestAccuracy.toFixed(0)}%`
+                            : "—"}
+                        </td>
+                        <td className="px-2 py-1 align-top text-right">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleOpenSubdomain(dom.domain, sub.code)
+                            }
+                            className="rounded-md border px-2 py-0.5 text-[11px] font-semibold hover:bg-gray-50"
+                          >
+                            {buttonLabel}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))}
       </section>
     </main>
   );

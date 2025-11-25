@@ -1,63 +1,72 @@
 // pages/api/safmeds/run.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import { createPagesServerClient } from "@supabase/auth-helpers-nextjs";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+type ApiResponse =
+  | { ok: true }
+  | { ok: false; error: string };
+
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse<ApiResponse>
+) {
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
-    return res.status(405).json({ ok: false, error: "Use POST" });
+    res.setHeader("Allow", ["POST"]);
+    return res
+      .status(405)
+      .json({ ok: false, error: "Method Not Allowed" });
   }
 
   try {
-    const supabase = createPagesServerClient({ req, res });
-
-    // 🔐 Make sure we have an authenticated user
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError) {
-      console.error("SAFMEDS getUser error", userError);
-      return res.status(401).json({ ok: false, error: "Auth error fetching user." });
-    }
-
-    if (!user) {
-      return res.status(401).json({ ok: false, error: "You must be signed in." });
-    }
-
     const body = req.body ?? {};
-    const deck = body.deck ?? null;
-    const durationSeconds = Number(body.duration_seconds) || 0;
-    const correct = Number(body.correct) || 0;
-    const incorrect = Number(body.incorrect) || 0;
-    const runStartedAt = body.run_started_at
-      ? new Date(body.run_started_at).toISOString()
-      : new Date().toISOString();
-
-    // 🧠 Build insert payload using ONLY columns that actually exist.
-    // Assumes safmeds_runs has: user_id, deck, correct, incorrect, duration_seconds, run_started_at
-    const insertPayload: any = {
-      user_id: user.id,
-      deck,
+    const {
+      user_id,
       correct,
       incorrect,
-      duration_seconds: durationSeconds,
-      run_started_at: runStartedAt,
-    };
+      duration_s, // 30 or 60 from trials.tsx
+      deck,
+      notes,
+    } = body;
 
-    const { error: insertError } = await supabase
+    if (!user_id) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Missing user_id" });
+    }
+
+    const safeCorrect = typeof correct === "number" ? correct : 0;
+    const safeIncorrect = typeof incorrect === "number" ? incorrect : 0;
+    const safeDuration =
+      typeof duration_s === "number" && duration_s > 0 ? duration_s : 60;
+
+    const { error } = await supabaseAdmin
       .from("safmeds_runs")
-      .insert(insertPayload);
+      .insert([
+        {
+          user_id,
+          correct: safeCorrect,
+          incorrect: safeIncorrect,
+          // ⛔ do NOT send net_score – it's a generated column in Postgres
+          duration_seconds: safeDuration, // NOT NULL column
+          deck: deck ?? null,
+          notes: notes ?? null,
+          // local_day / local_ts / created_at handled by defaults/triggers
+        },
+      ]);
 
-    if (insertError) {
-      console.error("SAFMEDS insert error", insertError);
-      return res.status(500).json({ ok: false, error: insertError.message });
+    if (error) {
+      console.error("safmeds/run insert error:", error);
+      return res
+        .status(500)
+        .json({ ok: false, error: error.message });
     }
 
     return res.status(200).json({ ok: true });
   } catch (e: any) {
-    console.error("SAFMEDS run handler exception", e);
-    return res.status(500).json({ ok: false, error: e?.message || "Unexpected error" });
+    console.error("safmeds/run exception:", e);
+    return res.status(500).json({
+      ok: false,
+      error: e?.message ?? "Unknown error",
+    });
   }
 }

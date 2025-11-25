@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useUser, useSupabaseClient } from "@supabase/auth-helpers-react";
 import { useRouter } from "next/router";
+import Link from "next/link";
 import {
   LineChart,
   Line,
@@ -14,7 +15,7 @@ import {
 
 type WeeklySummary = {
   user_id: string;
-  week_start: string; // date string
+  week_start: string; // we'll treat this as the earliest day we see
   total_trials: number;
   avg_correct: number;
   avg_attempted: number;
@@ -30,103 +31,11 @@ type SafmedsRun = {
   local_ts: string | null;
   correct: number;
   incorrect: number;
-  net_score: number;
+  net_score: number | null;
   duration_seconds: number | null;
   deck: string | null;
   notes: string | null;
 };
-
-function addDays(dateStr: string, days: number): string {
-  const d = new Date(dateStr);
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
-}
-
-/**
- * Helper to draw a simple net-score line chart directly in jsPDF.
- * - X axis: trial_number
- * - Y axis: net_score
- */
-function drawNetScoreChart(
-  doc: any,
-  y: number,
-  pageHeight: number,
-  marginLeft: number,
-  chartData: { trial_number: number; net_score: number }[]
-): number {
-  if (!chartData.length) return y;
-
-  const chartHeight = 40; // mm
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const marginRight = marginLeft;
-  const chartWidth = pageWidth - marginLeft - marginRight;
-
-  // Page break if needed
-  if (y + chartHeight + 4 > pageHeight) {
-    doc.addPage();
-    y = 14;
-  }
-
-  const x0 = marginLeft;
-  const y0 = y;
-  const x1 = x0 + chartWidth;
-  const y1 = y0 + chartHeight;
-
-  // Compute min/max net score
-  let minNet = chartData[0].net_score;
-  let maxNet = chartData[0].net_score;
-  chartData.forEach((p) => {
-    if (p.net_score < minNet) minNet = p.net_score;
-    if (p.net_score > maxNet) maxNet = p.net_score;
-  });
-
-  if (minNet === maxNet) {
-    // avoid flat 0-range
-    minNet = minNet - 1;
-    maxNet = maxNet + 1;
-  }
-
-  const range = maxNet - minNet || 1;
-
-  doc.setDrawColor(0, 0, 0);
-  doc.setLineWidth(0.2);
-
-  // Outer box
-  doc.rect(x0, y0, chartWidth, chartHeight);
-
-  // Horizontal midline (0 if in range)
-  if (minNet < 0 && maxNet > 0) {
-    const zeroY = y1 - ((0 - minNet) / range) * chartHeight;
-    doc.setDrawColor(200, 200, 200);
-    doc.line(x0, zeroY, x1, zeroY);
-  }
-
-  // Plot line
-  doc.setDrawColor(37, 99, 235); // blue-ish
-  doc.setLineWidth(0.5);
-
-  const n = chartData.length;
-  chartData.forEach((p, idx) => {
-    const t = n === 1 ? 0 : idx / (n - 1); // 0..1
-    const px = x0 + t * chartWidth;
-    const py =
-      y1 - ((p.net_score - minNet) / range) * chartHeight; // invert for PDF coords
-
-    if (idx === 0) {
-      doc.moveTo(px, py);
-    } else {
-      doc.lineTo(px, py);
-    }
-  });
-  doc.stroke();
-
-  // X-axis label
-  doc.setFontSize(8);
-  doc.setFont("helvetica", "normal");
-  doc.text("Trial", x0 + chartWidth / 2, y1 + 4, { align: "center" });
-
-  return y1 + 8; // new y with some spacing
-}
 
 export default function SafmedsWeekPage() {
   const user = useUser();
@@ -146,63 +55,96 @@ export default function SafmedsWeekPage() {
       return;
     }
 
-    const loadWeek = async () => {
+    const loadRuns = async () => {
       try {
         setLoading(true);
         setError(null);
 
-        // 1) Get the most recent week for this user
-        const { data: weeklyRows, error: weeklyErr } = await supabase
-          .from("v_safmeds_weekly")
+        // 🔹 Pull recent runs for this user — no date filter so we SEE data
+        const { data: runRows, error: runsErr } = await supabase
+          .from("safmeds_runs")
           .select("*")
           .eq("user_id", user.id)
-          .order("week_start", { ascending: false })
-          .limit(1);
+          .order("local_day", { ascending: true })
+          .order("local_ts", { ascending: true })
+          .limit(200); // plenty for recent weeks
 
-        if (weeklyErr) throw weeklyErr;
+        if (runsErr) throw runsErr;
 
-        if (!weeklyRows || weeklyRows.length === 0) {
+        const rows = (runRows ?? []) as SafmedsRun[];
+
+        if (!rows.length) {
           setWeeklySummary(null);
           setRunsByDay({});
           setLoading(false);
           return;
         }
 
-        const summary = weeklyRows[0] as WeeklySummary;
-        setWeeklySummary(summary);
-
-        const weekStart = summary.week_start.slice(0, 10);
-        const weekEnd = addDays(weekStart, 6);
-
-        // 2) Get all safmeds_runs for that week (all trials)
-        const { data: runRows, error: runsErr } = await supabase
-          .from("safmeds_runs")
-          .select("*")
-          .eq("user_id", user.id)
-          .gte("local_day", weekStart)
-          .lte("local_day", weekEnd)
-          .order("local_day", { ascending: true })
-          .order("local_ts", { ascending: true });
-
-        if (runsErr) throw runsErr;
-
+        // Group by local_day
         const byDay: Record<string, SafmedsRun[]> = {};
-        (runRows ?? []).forEach((r) => {
-          const run = r as SafmedsRun;
+        rows.forEach((run) => {
           if (!byDay[run.local_day]) byDay[run.local_day] = [];
           byDay[run.local_day].push(run);
         });
-
         setRunsByDay(byDay);
+
+        // Compute summary across all these runs (effectively a "recent week")
+        const total_trials = rows.length;
+
+        let totalCorrect = 0;
+        let totalAttempts = 0;
+        let best_correct = 0;
+        let best_accuracy = 0;
+
+        rows.forEach((run) => {
+          const c = run.correct ?? 0;
+          const ic = run.incorrect ?? 0;
+          const attempts = c + ic;
+
+          totalCorrect += c;
+          totalAttempts += attempts;
+
+          if (c > best_correct) {
+            best_correct = c;
+          }
+
+          if (attempts > 0) {
+            const acc = (c / attempts) * 100;
+            if (acc > best_accuracy) best_accuracy = acc;
+          }
+        });
+
+        const dayKeys = Object.keys(byDay).sort(); // earliest first for summary
+        const earliestDay = dayKeys[0];
+
+        const avg_correct =
+          total_trials > 0 ? totalCorrect / total_trials : 0;
+        const avg_attempted =
+          total_trials > 0 ? totalAttempts / total_trials : 0;
+        const avg_accuracy =
+          totalAttempts > 0 ? (totalCorrect / totalAttempts) * 100 : 0;
+
+        const summary: WeeklySummary = {
+          user_id: user.id as string,
+          week_start: earliestDay,
+          total_trials,
+          avg_correct,
+          avg_attempted,
+          avg_accuracy,
+          best_correct,
+          best_accuracy,
+        };
+
+        setWeeklySummary(summary);
         setLoading(false);
       } catch (e: any) {
         console.error(e);
-        setError(e.message ?? "Error loading weekly SAFMEDS data");
+        setError(e.message ?? "Error loading SAFMEDS data");
         setLoading(false);
       }
     };
 
-    loadWeek();
+    loadRuns();
   }, [user, supabase, router]);
 
   const handleDownloadCsv = () => {
@@ -229,14 +171,19 @@ export default function SafmedsWeekPage() {
     days.sort().forEach((day) => {
       const runs = runsByDay[day];
       runs.forEach((run, idx) => {
+        const netScore =
+          run.net_score != null
+            ? run.net_score
+            : (run.correct ?? 0) - (run.incorrect ?? 0);
+
         rows.push(
           [
-            weeklySummary.week_start.slice(0, 10),
+            weeklySummary.week_start,
             day,
             idx + 1,
             run.correct,
             run.incorrect,
-            run.net_score,
+            netScore,
             run.duration_seconds ?? "",
             (run.deck ?? "").replace(/,/g, " "),
             (run.notes ?? "").replace(/,/g, " "),
@@ -253,14 +200,14 @@ export default function SafmedsWeekPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `safmeds_week_${weeklySummary.week_start
-      .slice(0, 10)
-      .replace(/-/g, "")}.csv`;
+    a.download = `safmeds_recent_${weeklySummary.week_start.replace(
+      /-/g,
+      ""
+    )}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  // ✅ PDF with text summary + simple line graphs per day (no html2canvas)
   const handleDownloadPdf = async () => {
     if (!weeklySummary) return;
 
@@ -287,12 +234,12 @@ export default function SafmedsWeekPage() {
         y += lineHeight;
       };
 
-      const weekStr = weeklySummary.week_start.slice(0, 10);
+      const weekStr = weeklySummary.week_start;
       const dayKeys = Object.keys(runsByDay).sort();
 
       // Title
       doc.setFontSize(14);
-      addLine(`SAFMEDS Weekly Report — Week of ${weekStr}`, { bold: true });
+      addLine(`SAFMEDS Report — Starting ${weekStr}`, { bold: true });
       doc.setFontSize(11);
       addLine();
 
@@ -313,46 +260,105 @@ export default function SafmedsWeekPage() {
       addLine();
 
       if (dayKeys.length === 0) {
-        addLine("No trials recorded for this week.");
+        addLine("No trials recorded in this dataset.");
       } else {
-        // Per-day detail with chart + table-style text
         dayKeys.forEach((day) => {
           const runs = runsByDay[day];
 
           addLine(`Day: ${day}`, { bold: true });
           addLine(`Trials: ${runs.length}`);
 
-          // Build chart data for this day
-          const chartData = runs.map((run, idx) => ({
-            trial_number: idx + 1,
-            net_score: run.net_score,
-          }));
+          // Simple chart data
+          const chartData = runs.map((run, idx) => {
+            const netScore =
+              run.net_score != null
+                ? run.net_score
+                : (run.correct ?? 0) - (run.incorrect ?? 0);
+            return {
+              trial_number: idx + 1,
+              net_score: netScore,
+            };
+          });
 
-          // Draw chart
-          y = drawNetScoreChart(
-            doc,
-            y,
-            pageHeight,
-            marginLeft,
-            chartData
-          );
+          // Draw mini chart
+          const chartHeight = 40;
+          const pageWidth = doc.internal.pageSize.getWidth();
+          const marginRight = marginLeft;
+          const chartWidth = pageWidth - marginLeft - marginRight;
 
-          // Mini text header for tabular info
+          if (y + chartHeight + 4 > pageHeight) {
+            doc.addPage();
+            y = 14;
+          }
+
+          const x0 = marginLeft;
+          const y0 = y;
+          const x1 = x0 + chartWidth;
+          const y1 = y0 + chartHeight;
+
+          let minNet = chartData[0].net_score;
+          let maxNet = chartData[0].net_score;
+          chartData.forEach((p) => {
+            if (p.net_score < minNet) minNet = p.net_score;
+            if (p.net_score > maxNet) maxNet = p.net_score;
+          });
+          if (minNet === maxNet) {
+            minNet -= 1;
+            maxNet += 1;
+          }
+          const range = maxNet - minNet || 1;
+
+          doc.setDrawColor(0, 0, 0);
+          doc.setLineWidth(0.2);
+          doc.rect(x0, y0, chartWidth, chartHeight);
+
+          if (minNet < 0 && maxNet > 0) {
+            const zeroY = y1 - ((0 - minNet) / range) * chartHeight;
+            doc.setDrawColor(200, 200, 200);
+            doc.line(x0, zeroY, x1, zeroY);
+          }
+
+          doc.setDrawColor(37, 99, 235);
+          doc.setLineWidth(0.5);
+          const n = chartData.length;
+          chartData.forEach((p, idx) => {
+            const t = n === 1 ? 0 : idx / (n - 1);
+            const px = x0 + t * chartWidth;
+            const py =
+              y1 - ((p.net_score - minNet) / range) * chartHeight;
+            if (idx === 0) doc.moveTo(px, py);
+            else doc.lineTo(px, py);
+          });
+          doc.stroke();
+
+          doc.setFontSize(8);
+          doc.setFont("helvetica", "normal");
+          doc.text("Trial", x0 + chartWidth / 2, y1 + 4, {
+            align: "center",
+          });
+
+          y = y1 + 8;
+
+          // Table header
           addLine(
             "Trial  Correct  Incorrect  Net  Duration(s)  Deck",
             { bold: true }
           );
 
           runs.forEach((run, idx) => {
+            const netScore =
+              run.net_score != null
+                ? run.net_score
+                : (run.correct ?? 0) - (run.incorrect ?? 0);
+
             const deckLabel = (run.deck ?? "").slice(0, 20);
             const line =
               `${String(idx + 1).padStart(2, " ")}      ` +
               `${String(run.correct).padStart(3, " ")}      ` +
               `${String(run.incorrect).padStart(3, " ")}      ` +
-              `${String(run.net_score).padStart(3, " ")}      ` +
+              `${String(netScore).padStart(3, " ")}      ` +
               `${run.duration_seconds ?? ""}      ` +
               `${deckLabel}`;
-
             addLine(line);
           });
 
@@ -361,9 +367,7 @@ export default function SafmedsWeekPage() {
       }
 
       doc.save(
-        `safmeds_week_${weeklySummary.week_start
-          .slice(0, 10)
-          .replace(/-/g, "")}.pdf`
+        `safmeds_recent_${weeklySummary.week_start.replace(/-/g, "")}.pdf`
       );
     } catch (e) {
       console.error(e);
@@ -373,21 +377,56 @@ export default function SafmedsWeekPage() {
 
   if (!user) return null;
 
-  const dayKeys = Object.keys(runsByDay).sort(); // ascending dates
+  // 🔹 Newest day on top in the UI
+  const dayKeys = Object.keys(runsByDay)
+    .sort()
+    .reverse();
 
   return (
     <div className="max-w-4xl mx-auto p-4 space-y-6">
-      <h1 className="text-2xl font-bold">SAFMEDS — Weekly Report</h1>
+      <h1 className="text-2xl font-bold">SAFMEDS — Recent Runs</h1>
 
-      {loading && <p>Loading weekly data…</p>}
+      {/* Navigation */}
+      <nav className="flex flex-wrap gap-4 text-sm text-slate-600 mt-1 mb-2">
+        <Link href="/safmeds" className="underline hover:text-slate-900">
+          ← SAFMEDS Home
+        </Link>
+        <Link
+          href="/safmeds/trials"
+          className="underline hover:text-slate-900"
+        >
+          Timings / Run SAFMEDS
+        </Link>
+        <Link
+          href="/safmeds/downloads"
+          className="underline hover:text-slate-900"
+        >
+          Downloads & Reports
+        </Link>
+      </nav>
+
+      {loading && <p>Loading SAFMEDS data…</p>}
       {error && <p className="text-red-600">{error}</p>}
 
       {!loading && !error && !weeklySummary && (
-        <p>No weekly SAFMEDS data found yet for this user.</p>
+        <p>No SAFMEDS runs found yet for this user.</p>
       )}
 
       {!loading && !error && weeklySummary && (
         <>
+          {/* Small debug line so we can SEE that rows are coming in */}
+          <p className="text-xs text-slate-500">
+            Found{" "}
+            <strong>
+              {Object.values(runsByDay).reduce(
+                (sum, arr) => sum + arr.length,
+                0
+              )}
+            </strong>{" "}
+            runs across <strong>{dayKeys.length}</strong> day
+            {dayKeys.length === 1 ? "" : "s"}.
+          </p>
+
           {/* Buttons row */}
           <div className="flex flex-wrap gap-2 justify-end">
             <button
@@ -395,23 +434,22 @@ export default function SafmedsWeekPage() {
               disabled={dayKeys.length === 0}
               className="px-4 py-2 rounded-lg border bg-blue-600 text-white disabled:opacity-50 text-sm"
             >
-              Download Weekly CSV
+              Download CSV
             </button>
             <button
               onClick={handleDownloadPdf}
               disabled={dayKeys.length === 0}
               className="px-4 py-2 rounded-lg border bg-green-600 text-white disabled:opacity-50 text-sm"
             >
-              Download Weekly PDF Report
+              Download PDF Report
             </button>
           </div>
 
-          {/* On-screen report (summary + graphs + tables) */}
+          {/* Summary card */}
           <div className="space-y-6 mt-2">
-            {/* Weekly summary card */}
             <div className="border rounded-xl p-4 bg-white shadow-sm space-y-1">
               <h2 className="text-lg font-semibold">
-                Week of {weeklySummary.week_start.slice(0, 10)}
+                Starting from {weeklySummary.week_start}
               </h2>
               <p>Total trials: {weeklySummary.total_trials}</p>
               <p>
@@ -425,17 +463,50 @@ export default function SafmedsWeekPage() {
               </p>
             </div>
 
-            {/* One graph + table per day (screen only) */}
+            {/* Per-day graphs + tables */}
             {dayKeys.length === 0 ? (
-              <p>No trials for this week yet.</p>
+              <p>No trials in this dataset.</p>
             ) : (
               <div className="space-y-6">
                 {dayKeys.map((day) => {
                   const runs = runsByDay[day];
 
-                  const chartData = runs.map((run, idx) => ({
+                  const totalCorrect = runs.reduce(
+                    (sum, r) => sum + (r.correct ?? 0),
+                    0
+                  );
+                  const totalIncorrect = runs.reduce(
+                    (sum, r) => sum + (r.incorrect ?? 0),
+                    0
+                  );
+
+                  const perRunAccuracies = runs.map((r) => {
+                    const attempts =
+                      (r.correct ?? 0) + (r.incorrect ?? 0);
+                    return attempts > 0
+                      ? (r.correct / attempts) * 100
+                      : 0;
+                  });
+                  const bestAccuracy =
+                    perRunAccuracies.length > 0
+                      ? Math.max(...perRunAccuracies)
+                      : 0;
+
+                  // Up to 5 runs for graph (best net score first)
+                  const topRuns = [...runs]
+                    .map((r) => ({
+                      ...r,
+                      displayNet:
+                        r.net_score != null
+                          ? r.net_score
+                          : (r.correct ?? 0) - (r.incorrect ?? 0),
+                    }))
+                    .sort((a, b) => b.displayNet - a.displayNet)
+                    .slice(0, 5);
+
+                  const chartData = topRuns.map((run, idx) => ({
                     trial_number: idx + 1,
-                    net_score: run.net_score,
+                    net_score: run.displayNet,
                     correct: run.correct,
                     incorrect: run.incorrect,
                   }));
@@ -447,11 +518,27 @@ export default function SafmedsWeekPage() {
                     >
                       <h3 className="text-md font-semibold mb-2">
                         {day} — {runs.length} trial
-                        {runs.length !== 1 ? "s" : ""}
+                        {runs.length !== 1 ? "s" : ""}  
                       </h3>
                       <p className="text-xs text-gray-600 mb-2">
-                        Graph shows <strong>net score</strong> (correct −
-                        incorrect) per trial for this day.
+                        Graph shows <strong>up to 5 runs</strong> for this day
+                        (best net score first). A day with only one trial will
+                        show a single point.
+                      </p>
+
+                      <p className="text-xs text-gray-700 mb-2">
+                        Total correct:{" "}
+                        <span className="font-semibold">
+                          {totalCorrect}
+                        </span>{" "}
+                        · Total incorrect:{" "}
+                        <span className="font-semibold">
+                          {totalIncorrect}
+                        </span>{" "}
+                        · Best accuracy:{" "}
+                        <span className="font-semibold">
+                          {bestAccuracy.toFixed(1)}%
+                        </span>
                       </p>
 
                       <div className="w-full h-64">
@@ -461,7 +548,7 @@ export default function SafmedsWeekPage() {
                             <XAxis
                               dataKey="trial_number"
                               label={{
-                                value: "Trial",
+                                value: "Run (best to 5th best)",
                                 position: "insideBottom",
                                 offset: -5,
                               }}
@@ -469,7 +556,7 @@ export default function SafmedsWeekPage() {
                             <YAxis />
                             <Tooltip />
                             <Line
-                              type="monotone"
+                              type="linear" // straight lines
                               dataKey="net_score"
                               strokeWidth={2}
                               dot={{ r: 3 }}
@@ -496,32 +583,40 @@ export default function SafmedsWeekPage() {
                             </tr>
                           </thead>
                           <tbody>
-                            {runs.map((run, idx) => (
-                              <tr
-                                key={run.id}
-                                className="border-b last:border-0"
-                              >
-                                <td className="py-1 px-1">{idx + 1}</td>
-                                <td className="py-1 px-1 text-right">
-                                  {run.correct}
-                                </td>
-                                <td className="py-1 px-1 text-right">
-                                  {run.incorrect}
-                                </td>
-                                <td className="py-1 px-1 text-right">
-                                  {run.net_score}
-                                </td>
-                                <td className="py-1 px-1 text-right">
-                                  {run.duration_seconds ?? ""}
-                                </td>
-                                <td className="py-1 px-1">
-                                  {run.deck ?? ""}
-                                </td>
-                                <td className="py-1 px-1">
-                                  {run.notes ?? ""}
-                                </td>
-                              </tr>
-                            ))}
+                            {runs.map((run, idx) => {
+                              const net =
+                                run.net_score != null
+                                  ? run.net_score
+                                  : (run.correct ?? 0) -
+                                    (run.incorrect ?? 0);
+
+                              return (
+                                <tr
+                                  key={run.id}
+                                  className="border-b last:border-0"
+                                >
+                                  <td className="py-1 px-1">{idx + 1}</td>
+                                  <td className="py-1 px-1 text-right">
+                                    {run.correct}
+                                  </td>
+                                  <td className="py-1 px-1 text-right">
+                                    {run.incorrect}
+                                  </td>
+                                  <td className="py-1 px-1 text-right">
+                                    {net}
+                                  </td>
+                                  <td className="py-1 px-1 text-right">
+                                    {run.duration_seconds ?? ""}  
+                                  </td>
+                                  <td className="py-1 px-1">
+                                    {run.deck ?? ""}
+                                  </td>
+                                  <td className="py-1 px-1">
+                                    {run.notes ?? ""}
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>

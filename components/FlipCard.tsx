@@ -5,36 +5,58 @@ export default function FlipCard({
   onToggle,
   front,
   back,
-  heightClass = "min-h-[240px]",
 }: {
   flipped: boolean;
   onToggle: () => void;
   front: ReactNode;
   back: ReactNode;
-  heightClass?: string;
 }) {
   return (
     <div
-      className={`relative ${heightClass} card-surface border border-slate-200 bg-white rounded-xl p-4 cursor-pointer`}
+      // Outer wrapper: square card with perspective
+      style={{
+        aspectRatio: "1 / 1",
+        perspective: "1200px",
+      }}
+      className="relative w-full max-w-sm mx-auto cursor-pointer"
+      onClick={onToggle}
+      role="button"
+      tabIndex={0}
     >
-      <div className="perspective-1200">
+      <div
+        // Flipping container
+        style={{
+          position: "relative",
+          width: "100%",
+          height: "100%",
+          transformStyle: "preserve-3d",
+          transition: "transform 0.5s",
+          transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)",
+        }}
+      >
+        {/* FRONT */}
         <div
-          className={`relative preserve-3d transition-transform duration-500 gpu-hint ${
-            flipped ? "rotate-y-180" : ""
-          }`}
-          onClick={onToggle}
-          role="button"
-          tabIndex={0}
+          style={{
+            position: "absolute",
+            inset: 0,
+            backfaceVisibility: "hidden",
+          }}
+          className="border border-slate-200 bg-white rounded-xl p-4 flex items-center justify-center text-center text-lg font-medium text-slate-900 shadow-sm"
         >
-          {/* FRONT */}
-          <div className="absolute inset-0 backface-hidden rounded-lg bg-white text-slate-900 p-4 flex items-center justify-center">
-            {front}
-          </div>
+          {front}
+        </div>
 
-          {/* BACK */}
-          <div className="absolute inset-0 backface-hidden rotate-y-180 rounded-lg bg-white text-slate-900 p-4 flex items-center justify-center">
-            {back}
-          </div>
+        {/* BACK */}
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            backfaceVisibility: "hidden",
+            transform: "rotateY(180deg)",
+          }}
+          className="border border-slate-200 bg-white rounded-xl p-4 flex items-center justify-center text-center text-lg font-medium text-slate-900 shadow-sm"
+        >
+          {back}
         </div>
       </div>
     </div>

@@ -19,8 +19,7 @@ type QuizItem = {
   d: string;
   correct_answer: string;
   rationale_correct?: string | null;
-  // NEW: optional image path from Supabase
-  image_path?: string | null;
+  image_path?: string | null; // optional image path from Supabase
 };
 
 type ChoiceLetter = "A" | "B" | "C" | "D";
@@ -68,7 +67,11 @@ function parseCode(raw: string | string[] | undefined): {
   if (!DOMAIN_COUNTS[letter] || !Number.isFinite(num) || num <= 0) {
     return { domain: null, code: null, index: null };
   }
-  return { domain: letter, code: `${letter}${num.toString().padStart(2, "0")}`, index: num };
+  return {
+    domain: letter,
+    code: `${letter}${num.toString().padStart(2, "0")}`,
+    index: num,
+  };
 }
 
 function getNextSubdomainCode(
@@ -81,8 +84,8 @@ function getNextSubdomainCode(
   return `${domain}${(index + 1).toString().padStart(2, "0")}`;
 }
 
-// Local progress
-function setLocalProgress(
+// Local best (when completed)
+function setLocalCompletedBest(
   domain: DomainLetter,
   code: string,
   accuracyPercent: number
@@ -105,6 +108,57 @@ function setLocalProgress(
     window.localStorage.setItem(lastKey, code);
   } catch {
     // ignore localStorage issues
+  }
+}
+
+// 🔹 Live (in-progress) state per subdomain
+type LiveState = {
+  answeredCount: number;
+  correctCount: number;
+};
+
+function saveLiveState(
+  domain: DomainLetter,
+  code: string,
+  answeredCount: number,
+  correctCount: number
+) {
+  try {
+    const key = `quiz:live:${domain}:${code}`;
+    const payload: LiveState = { answeredCount, correctCount };
+    window.localStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    // ignore
+  }
+}
+
+function loadLiveState(domain: DomainLetter, code: string): LiveState | null {
+  try {
+    const key = `quiz:live:${domain}:${code}`;
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      typeof parsed?.answeredCount === "number" &&
+      typeof parsed?.correctCount === "number"
+    ) {
+      return {
+        answeredCount: parsed.answeredCount,
+        correctCount: parsed.correctCount,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function clearLiveState(domain: DomainLetter, code: string) {
+  try {
+    const key = `quiz:live:${domain}:${code}`;
+    window.localStorage.removeItem(key);
+  } catch {
+    // ignore
   }
 }
 
@@ -144,14 +198,12 @@ async function saveProgressToServer(
 
 /**
  * Build a full image URL for quiz images.
- * Set NEXT_PUBLIC_QUIZ_IMAGE_BASE_URL in your env, e.g.:
- * https://YOUR-PROJECT.supabase.co/storage/v1/object/public/quiz-images
  */
 function buildImageUrl(imagePath?: string | null): string | null {
   if (!imagePath) return null;
   const base = process.env.NEXT_PUBLIC_QUIZ_IMAGE_BASE_URL;
   if (!base) {
-    // Fallback: if you ever store full URLs directly in image_path
+    // Fallback: allow full URLs directly in image_path
     return imagePath;
   }
   const sep = base.endsWith("/") ? "" : "/";
@@ -182,11 +234,12 @@ export default function QuizRunnerPage() {
   const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
 
   const [showSummary, setShowSummary] = useState(false);
+  const [savingFinal, setSavingFinal] = useState(false);
 
   // Fetch questions
   useEffect(() => {
     if (!domain || !code) return;
-    if (user === undefined) return;
+    if (user === undefined) return; // still loading
     if (!user) return;
 
     let cancelled = false;
@@ -249,6 +302,34 @@ export default function QuizRunnerPage() {
     (domain && getDomainTitle(domain)) ?? (domain ? `Domain ${domain}` : "");
   const subTitle = code ? getSubdomainText(code) ?? code : "";
 
+  // 🔹 Restore live counts + question index after questions are loaded
+  useEffect(() => {
+    if (!domain || !code) return;
+    if (fetchState.status !== "loaded") return;
+    if (totalQuestions === 0) return;
+
+    try {
+      const live = loadLiveState(domain, code);
+      if (!live || live.answeredCount <= 0) return;
+
+      // restore scoreboard
+      setAnsweredCount(live.answeredCount);
+      setCorrectCount(live.correctCount);
+
+      // restore question index to last answered question (or clamp)
+      const idx = Math.min(live.answeredCount - 1, totalQuestions - 1);
+      if (idx >= 0) {
+        setCurrentIdx(idx);
+      }
+    } catch {
+      // ignore
+    }
+  }, [domain, code, fetchState.status, totalQuestions]);
+
+  /* =========================
+     Handlers
+  ========================== */
+
   function handleAnswer(choice: ChoiceLetter) {
     if (!current || isAnswered) return;
 
@@ -273,27 +354,54 @@ export default function QuizRunnerPage() {
     setAnsweredCount(nextAnswered);
     setCorrectCount(nextCorrect);
 
+    // 🔹 Save live state so leaving/returning does not reset
     if (domain && code) {
-      void saveProgressToServer(domain, code, nextAccuracy, nextAnswered, nextCorrect, false);
+      saveLiveState(domain as DomainLetter, code, nextAnswered, nextCorrect);
+    }
+
+    // 🔹 Save to server on every answer (completed = false)
+    if (domain && code) {
+      void saveProgressToServer(
+        domain as DomainLetter,
+        code,
+        nextAccuracy,
+        nextAnswered,
+        nextCorrect,
+        false
+      );
     }
   }
 
+  // 🔹 UPDATED: always mark subdomain completed, clear live state, and show summary
   async function handleFinishSubdomain() {
     if (!domain || !code || !user) return;
+
     const letter = domain as DomainLetter;
+    const finalAccuracy =
+      answeredCount > 0
+        ? Math.round((correctCount / answeredCount) * 100)
+        : 0;
 
-    setLocalProgress(letter, code, accuracyPercent);
+    // ✅ Track best result locally (even if 0/0, it’s "completed")
+    setLocalCompletedBest(letter, code, finalAccuracy);
 
-    await saveProgressToServer(
-      letter,
-      code,
-      accuracyPercent,
-      answeredCount,
-      correctCount,
-      true
-    );
+    // ✅ Clear live in-progress state so TOC no longer shows "Continue"
+    clearLiveState(letter, code);
 
-    setShowSummary(true);
+    setSavingFinal(true);
+    try {
+      await saveProgressToServer(
+        letter,
+        code,
+        finalAccuracy,
+        answeredCount,
+        correctCount,
+        true
+      );
+    } finally {
+      setSavingFinal(false);
+      setShowSummary(true);
+    }
   }
 
   function handleNextQuestion() {
@@ -340,13 +448,15 @@ export default function QuizRunnerPage() {
           {isCorrect ? "That is correct. 🎉" : "That is not correct."}
         </p>
         {generic && (
-          <p className="mb-1 whitespace-pre-line">
-            {generic}
-          </p>
+          <p className="mb-1 whitespace-pre-line">{generic}</p>
         )}
       </div>
     );
   }
+
+  /* =========================
+     Guard states
+  ========================== */
 
   if (!domain || !code) {
     return (
@@ -444,6 +554,10 @@ export default function QuizRunnerPage() {
   const questionNumber = currentIdx + 1;
   const imageUrl = buildImageUrl(current.image_path);
 
+  /* =========================
+     Main render
+  ========================== */
+
   return (
     <main className="relative mx-auto max-w-3xl px-4 py-8">
       {showSummary && (
@@ -476,9 +590,10 @@ export default function QuizRunnerPage() {
               </button>
               <button
                 onClick={handleNextSubdomain}
-                className="rounded-md border bgBlack px-3 py-1.5 text-sm font-semibold text-white bg-black"
+                className="rounded-md border bg-black px-3 py-1.5 text-sm font-semibold text-white"
+                disabled={savingFinal}
               >
-                Next subdomain
+                {savingFinal ? "Saving…" : "Next subdomain"}
               </button>
             </div>
           </div>

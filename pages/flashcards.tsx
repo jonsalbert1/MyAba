@@ -1,308 +1,336 @@
-// pages/flashcards.tsx
-import Head from "next/head";
-import { useEffect, useMemo, useState, useCallback } from "react";
+// pages/flashcards/index.tsx
+import { useEffect, useState } from "react";
+import FlipCard from "@/components/FlipCard";
+
+type DeckMeta = {
+  class_code: string;
+  deck_number: number;
+};
 
 type Card = {
   id: string;
-  term?: string | null;
-  definition?: string | null;
-  deck?: string | null;
-  created_at?: string | null;
+  term: string;
+  definition: string;
+  class_code: string;
+  deck_number: number;
 };
 
-// ---------- helper: parse deck from URL ----------
-function initialDeck(): string {
-  try {
-    if (typeof window === "undefined") return "GLOBAL";
-    const d = new URLSearchParams(window.location.search).get("deck");
-    return d && d.trim() ? d.trim() : "GLOBAL";
-  } catch {
-    return "GLOBAL";
-  }
-}
-
-// ---------- helper: fetch cards from /api/flashcards ----------
-async function fetchCards(params: { deck?: string; domain?: string; code?: string }) {
-  const p = new URLSearchParams();
-  if (params.deck)   p.set("deck", params.deck);
-  if (params.domain) p.set("domain", params.domain);
-  if (params.code)   p.set("code", params.code);
-
-  const resp = await fetch(`/api/flashcards?${p.toString()}`, { cache: "no-store" });
-  // If the endpoint itself fails (5xx/4xx), surface the status
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`HTTP ${resp.status}: ${text.slice(0, 200)}`);
-  }
-
-  const json = await resp.json();
-
-  // Accept either { cards: [...] } or { ok:true, cards:[...] }
-  if (Array.isArray(json?.cards)) {
-    return json.cards as Card[];
-  }
-  if (json?.ok && Array.isArray(json?.cards)) {
-    return json.cards as Card[];
-  }
-
-  // Some older handlers return { data: [...] }
-  if (Array.isArray(json?.data)) {
-    return json.data as Card[];
-  }
-
-  // If we get here, shape is wrong — show a readable error
-  throw new Error(
-    `Malformed /api/flashcards response: ${JSON.stringify(json).slice(0, 300)}`
-  );
-}
-
-// Fisher–Yates shuffle
-function shuffleArray<T>(arr: T[]): T[] {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-const STORAGE_KEY = "flashcards_shuffle_on_load";
-
 export default function FlashcardsPage() {
-  const [deck, setDeck] = useState<string>(() => initialDeck());
+  const [decks, setDecks] = useState<DeckMeta[]>([]);
+  const [selectedDeck, setSelectedDeck] = useState<DeckMeta | null>(null);
   const [cards, setCards] = useState<Card[]>([]);
-  const [idx, setIdx] = useState(0);
-  const [showDef, setShowDef] = useState(false);
-  const [msg, setMsg] = useState("loading…");
-  const [shuffleOnLoad, setShuffleOnLoad] = useState<boolean>(true);
-  const [loading, setLoading] = useState(false);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [flipped, setFlipped] = useState(false);
+  const [loadingDecks, setLoadingDecks] = useState(false);
+  const [loadingCards, setLoadingCards] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Load pref
+  /* =========================
+     1) Load deck list on mount
+  ========================== */
   useEffect(() => {
-    try {
-      const raw = typeof window !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
-      if (raw !== null) setShuffleOnLoad(raw === "true");
-    } catch {}
+    const loadDecks = async () => {
+      try {
+        setLoadingDecks(true);
+        setError(null);
+
+        const res = await fetch("/api/flashcards/meta");
+        const json = await res.json();
+
+        if (!json.ok) {
+          setError(json.error ?? "Failed to load decks");
+          return;
+        }
+        if (json.mode !== "decks") {
+          setError(`Unexpected mode from API: ${json.mode}`);
+          return;
+        }
+
+        const decksFromApi = (json.decks || []) as DeckMeta[];
+        setDecks(decksFromApi);
+
+        // auto-select the first deck
+        if (decksFromApi.length > 0) {
+          setSelectedDeck(decksFromApi[0]);
+        }
+      } catch (e: any) {
+        console.error("Error loading decks:", e);
+        setError(e?.message ?? "Unknown error loading decks");
+      } finally {
+        setLoadingDecks(false);
+      }
+    };
+
+    loadDecks();
   }, []);
 
-  // Persist pref
+  /* =========================
+     2) Load cards when deck changes
+  ========================== */
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, String(shuffleOnLoad));
-    } catch {}
-  }, [shuffleOnLoad]);
+    const loadCards = async () => {
+      if (!selectedDeck) return;
 
-  // Fetch function
-  const load = useCallback(async (deckName: string) => {
-    setLoading(true);
-    try {
-      const data = await fetchCards({ deck: deckName || "GLOBAL" });
-      const final = shuffleOnLoad ? shuffleArray(data) : data;
-      setCards(final);
-      setMsg(`loaded ${data.length} cards${shuffleOnLoad ? " (shuffled)" : ""}`);
-      setIdx(0);
-      setShowDef(false);
-    } catch (e: any) {
-      setCards([]);
-      setMsg(`fetch error: ${e?.message ?? "unknown error"}`);
-    } finally {
-      setLoading(false);
-    }
-  }, [shuffleOnLoad]);
+      try {
+        setLoadingCards(true);
+        setError(null);
 
-  // Load on mount and when shuffle pref toggles
-  useEffect(() => {
-    load(deck);
-  }, [deck, shuffleOnLoad, load]);
+        const { class_code, deck_number } = selectedDeck;
 
-  // Keep idx in bounds when cards length changes
-  useEffect(() => {
-    if (!cards.length) {
-      setIdx(0);
-      setShowDef(false);
-      return;
-    }
-    setIdx((i) => Math.min(i, cards.length - 1));
-    setShowDef(false);
-  }, [cards.length]);
+        const url = `/api/flashcards/meta?class_code=${encodeURIComponent(
+          class_code
+        )}&deck_number=${deck_number}`;
 
-  useEffect(() => { setShowDef(false); }, [idx]);
+        console.log("Requesting cards with:", { class_code, deck_number, url });
 
-  const next = useCallback(() => {
-    if (!cards.length) return;
-    setIdx((i) => (i + 1) % cards.length);
-  }, [cards.length]);
+        const res = await fetch(url);
+        const json = await res.json();
 
-  const prev = useCallback(() => {
-    if (!cards.length) return;
-    setIdx((i) => (i - 1 + cards.length) % cards.length);
-  }, [cards.length]);
+        if (!json.ok) {
+          setError(json.error ?? "Failed to load cards");
+          return;
+        }
+        if (json.mode !== "cards") {
+          setError(`Unexpected mode from API: ${json.mode}`);
+          return;
+        }
 
-  const flip = useCallback(() => setShowDef((s) => !s), []);
+        const cardsFromApi = (json.data || []) as Card[];
 
-  const shuffleNow = useCallback(() => {
-    if (!cards.length) return;
-    setCards((prev) => shuffleArray(prev));
-    setIdx(0);
-    setShowDef(false);
-    setMsg(`shuffled ${cards.length} cards`);
-  }, [cards.length]);
+        console.log(
+          `loaded ${cardsFromApi.length} cards [class_code=${class_code}, deck_number=${deck_number}]`
+        );
 
-  // Keyboard: ←/→ navigate, Space flip, "s" shuffle, "t" toggle shuffle-on-load
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "ArrowRight") { e.preventDefault(); next(); }
-      else if (e.key === "ArrowLeft") { e.preventDefault(); prev(); }
-      else if (e.code === "Space") { e.preventDefault(); flip(); }
-      else if (e.key.toLowerCase() === "s") { e.preventDefault(); shuffleNow(); }
-      else if (e.key.toLowerCase() === "t") { e.preventDefault(); setShuffleOnLoad((v) => !v); }
+        // default: keep order as-is; we’ll have a Shuffle button
+        setCards(cardsFromApi);
+        setCurrentIndex(0);
+        setFlipped(false);
+      } catch (e: any) {
+        console.error("Error loading cards:", e);
+        setError(e?.message ?? "Unknown error loading cards");
+      } finally {
+        setLoadingCards(false);
+      }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [next, prev, flip, shuffleNow]);
 
-  // Helpers to change deck from the UI
-  const [deckInput, setDeckInput] = useState<string>(() => deck);
-  useEffect(() => setDeckInput(deck), [deck]);
-  const applyDeck = useCallback(() => {
-    const d = deckInput.trim() || "GLOBAL";
-    // update URL (?deck=...)
-    try {
-      const url = new URL(window.location.href);
-      if (d.toUpperCase() === "GLOBAL") url.searchParams.delete("deck");
-      else url.searchParams.set("deck", d);
-      window.history.replaceState(null, "", url.toString());
-    } catch {}
-    setDeck(d);
-  }, [deckInput]);
+    loadCards();
+  }, [selectedDeck]);
 
-  const c = cards[idx];
+  /* =========================
+     3) Keyboard shortcuts
+        Space = flip
+        N / → = next
+        P / ← = previous
+  ========================== */
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't steal keys when typing in inputs/textareas
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
 
-  if (!cards.length) {
-    return (
-      <>
-        <Head><title>Flashcards • MyABA</title></Head>
-        <main className="mx-auto max-w-3xl p-6">
-          <div className="mb-4 flex items-center justify-between">
-            <h1 className="text-xl font-semibold tracking-tight">Flashcards</h1>
-            <div className="text-sm text-zinc-500">0 / 0</div>
-          </div>
+      // Flip with spacebar
+      if (e.code === "Space") {
+        e.preventDefault();
+        setFlipped((prev) => !prev);
+        return;
+      }
 
-          {/* Deck control even when empty */}
-          <div className="mb-4 flex items-center gap-2">
-            <label className="text-sm text-zinc-700">Deck:</label>
-            <input
-              value={deckInput}
-              onChange={(e) => setDeckInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && applyDeck()}
-              placeholder="GLOBAL"
-              className="rounded border px-2 py-1 text-sm"
-            />
-            <button
-              type="button"
-              onClick={applyDeck}
-              className="rounded border px-3 py-1.5 text-sm hover:bg-zinc-50"
-              disabled={loading}
-            >
-              {loading ? "Loading…" : "Load"}
-            </button>
-          </div>
+      // Next: N or ArrowRight
+      if (e.key === "n" || e.key === "N" || e.code === "ArrowRight") {
+        e.preventDefault();
+        setCurrentIndex((prev) => {
+          if (cards.length === 0) return prev;
+          const next = (prev + 1) % cards.length;
+          return next;
+        });
+        setFlipped(false);
+        return;
+      }
 
-          <p className="text-sm text-zinc-600">{msg}</p>
-        </main>
-      </>
+      // Previous: P or ArrowLeft
+      if (e.key === "p" || e.key === "P" || e.code === "ArrowLeft") {
+        e.preventDefault();
+        setCurrentIndex((prev) => {
+          if (cards.length === 0) return prev;
+          const next = (prev - 1 + cards.length) % cards.length;
+          return next;
+        });
+        setFlipped(false);
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [cards.length]);
+
+  /* =========================
+     4) Handlers
+  ========================== */
+  const handleDeckChange = (value: string) => {
+    const [class_code, deck_number_str] = value.split("::");
+    const deck_number = Number(deck_number_str);
+
+    const found = decks.find(
+      (d) => d.class_code === class_code && d.deck_number === deck_number
     );
-  }
+    if (found) {
+      setSelectedDeck(found);
+    }
+  };
 
-  // Button wrappers to prevent bubbling to card click
-  const onPrevClick: React.MouseEventHandler<HTMLButtonElement> = (e) => { e.preventDefault(); e.stopPropagation(); prev(); };
-  const onNextClick: React.MouseEventHandler<HTMLButtonElement> = (e) => { e.preventDefault(); e.stopPropagation(); next(); };
-  const onFlipClick: React.MouseEventHandler<HTMLButtonElement> = (e) => { e.preventDefault(); e.stopPropagation(); flip(); };
-  const onShuffleClick: React.MouseEventHandler<HTMLButtonElement> = (e) => { e.preventDefault(); e.stopPropagation(); shuffleNow(); };
+  const handleFlipClick = () => {
+    setFlipped((prev) => !prev);
+  };
 
+  const handleNext = () => {
+    if (cards.length === 0) return;
+    setCurrentIndex((prev) => (prev + 1) % cards.length);
+    setFlipped(false);
+  };
+
+  const handlePrev = () => {
+    if (cards.length === 0) return;
+    setCurrentIndex((prev) => (prev - 1 + cards.length) % cards.length);
+    setFlipped(false);
+  };
+
+  const handleShuffle = () => {
+    if (cards.length === 0) return;
+    setCards((prev) => {
+      const shuffled = [...prev].sort(() => Math.random() - 0.5);
+      return shuffled;
+    });
+    setCurrentIndex(0);
+    setFlipped(false);
+  };
+
+  const currentCard = cards.length > 0 ? cards[currentIndex] : null;
+
+  /* =========================
+     5) Render
+  ========================== */
   return (
-    <>
-      <Head>
-        <title>Flashcards • MyABA</title>
-        <meta name="description" content="Study your flashcards with flip, shuffle, and keyboard navigation." />
-      </Head>
+    <div className="max-w-4xl mx-auto px-4 py-8">
+      <h1 className="text-2xl font-bold mb-2">Flashcards</h1>
+      <p className="text-sm text-slate-600 mb-4">
+        Space = flip • N / → = next • P / ← = previous
+      </p>
 
-      <main className="mx-auto max-w-3xl p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-xl font-semibold tracking-tight">Flashcards</h1>
-          <div className="text-sm text-zinc-500">
-            Card <span className="font-medium text-zinc-800">{idx + 1}</span> / {cards.length}
-          </div>
+      {error && (
+        <div className="mb-4 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+          {error}
         </div>
+      )}
 
-        {/* Deck + shuffle controls */}
-        <div className="mb-4 flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-zinc-700">Deck:</label>
-            <input
-              value={deckInput}
-              onChange={(e) => setDeckInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && applyDeck()}
-              placeholder="GLOBAL"
-              className="rounded border px-2 py-1 text-sm"
-            />
-            <button
-              type="button"
-              onClick={applyDeck}
-              className="rounded border px-3 py-1.5 text-sm hover:bg-zinc-50"
-              disabled={loading}
-            >
-              {loading ? "Loading…" : "Load"}
-            </button>
-          </div>
+      {/* Deck selector */}
+      <div className="mb-6 flex flex-wrap items-center gap-3">
+        <label className="text-sm font-medium">
+          Select deck:
+          <select
+            className="ml-2 rounded border border-slate-300 px-2 py-1 text-sm"
+            value={
+              selectedDeck
+                ? `${selectedDeck.class_code}::${selectedDeck.deck_number}`
+                : ""
+            }
+            onChange={(e) => handleDeckChange(e.target.value)}
+            disabled={loadingDecks || decks.length === 0}
+          >
+            {loadingDecks && <option>Loading decks…</option>}
 
-          <label className="inline-flex items-center gap-2 text-sm text-zinc-700 ml-auto">
-            <input
-              type="checkbox"
-              className="h-4 w-4 rounded border-zinc-300"
-              checked={shuffleOnLoad}
-              onChange={(e) => setShuffleOnLoad(e.target.checked)}
-              aria-label="Shuffle on load"
-              title="Toggle shuffle on load (T)"
-            />
-            Shuffle on load
-          </label>
-        </div>
+            {!loadingDecks && decks.length === 0 && (
+              <option>No decks found</option>
+            )}
 
-        <div className="mb-2 text-xs text-zinc-500">{msg}</div>
+            {!loadingDecks &&
+              decks.length > 0 &&
+              decks.map((d) => (
+                <option
+                  key={`${d.class_code}::${d.deck_number}`}
+                  value={`${d.class_code}::${d.deck_number}`}
+                >
+                  {d.class_code} — Deck {d.deck_number}
+                </option>
+              ))}
+          </select>
+        </label>
 
-        <div className="mb-5 flex flex-wrap gap-2">
-          <button type="button" onClick={onPrevClick} className="rounded-xl border px-4 py-2 text-sm hover:bg-zinc-50 active:scale-[0.99] transition">
-            Prev
-          </button>
-          <button type="button" onClick={onFlipClick} className="rounded-xl border px-4 py-2 text-sm hover:bg-zinc-50 active:scale-[0.99] transition">
-            {showDef ? "Show Term" : "Show Definition"}
-          </button>
-          <button type="button" onClick={onNextClick} className="rounded-xl border px-4 py-2 text-sm hover:bg-zinc-50 active:scale-[0.99] transition">
-            Next
-          </button>
-          <button type="button" onClick={onShuffleClick} className="rounded-xl border px-4 py-2 text-sm hover:bg-zinc-50 active:scale-[0.99] transition" title="Shuffle deck (S)">
-            Shuffle 🔀
-          </button>
-        </div>
+        {/* Deck info */}
+        {selectedDeck && cards.length > 0 && (
+          <span className="text-sm text-slate-600">
+            {selectedDeck.class_code} — Deck {selectedDeck.deck_number} • Card{" "}
+            {currentIndex + 1} of {cards.length}
+          </span>
+        )}
+      </div>
 
-        {/* Clickable card */}
-        <article
-          role="button"
-          tabIndex={0}
-          onClick={() => flip()}
-          onKeyDown={(e) => { if (e.code === "Space" || e.key === "Enter") { e.preventDefault(); flip(); } }}
-          aria-pressed={showDef}
-          className="cursor-pointer select-none rounded-2xl border bg-white p-6 shadow-sm transition-transform focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+      {/* Controls */}
+      <div className="mb-4 flex flex-wrap gap-3 items-center">
+        <button
+          type="button"
+          onClick={handlePrev}
+          disabled={cards.length === 0}
+          className="rounded-md border border-slate-300 px-3 py-1 text-sm disabled:opacity-40"
         >
-          <h2 className="m-0 text-lg font-medium text-zinc-900">
-            {showDef ? (c.definition ?? <em>No definition</em>) : (c.term ?? "(no term)")}
-          </h2>
-          <p className="mt-2 text-zinc-600">
-            {showDef ? "Definition" : "Term"} • Click or press Space to flip
-          </p>
-        </article>
-      </main>
-    </>
+          ← Previous (P)
+        </button>
+        <button
+          type="button"
+          onClick={handleFlipClick}
+          disabled={!currentCard}
+          className="rounded-md border border-slate-300 px-3 py-1 text-sm disabled:opacity-40"
+        >
+          Flip (Space)
+        </button>
+        <button
+          type="button"
+          onClick={handleNext}
+          disabled={cards.length === 0}
+          className="rounded-md border border-slate-300 px-3 py-1 text-sm disabled:opacity-40"
+        >
+          Next (N) →
+        </button>
+        <button
+          type="button"
+          onClick={handleShuffle}
+          disabled={cards.length === 0}
+          className="rounded-md border border-slate-300 px-3 py-1 text-sm disabled:opacity-40"
+        >
+          Shuffle Deck
+        </button>
+      </div>
+
+      {/* Current card */}
+      {loadingCards && (
+        <div className="text-sm text-slate-600 mb-4">Loading cards…</div>
+      )}
+
+      {!loadingCards && !currentCard && (
+        <div className="text-sm text-slate-600">
+          {selectedDeck
+            ? "No cards found for this deck."
+            : "Select a deck to begin."}
+        </div>
+      )}
+
+      {currentCard && (
+        <div className="max-w-md mx-auto">
+          <FlipCard
+            flipped={flipped}
+            onToggle={handleFlipClick}
+            front={currentCard.term}
+            back={currentCard.definition}
+          />
+        </div>
+      )}
+    </div>
   );
 }

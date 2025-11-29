@@ -1,5 +1,5 @@
 // components/SafmedsMobile.tsx
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useSupabaseClient, useUser } from "@supabase/auth-helpers-react";
 
 /* =========================
@@ -10,8 +10,6 @@ type Card = {
   term: string;
   definition: string;
   deck?: string | null;
-  class_code?: string | null;
-  deck_number?: number | null;
 };
 
 type Attempt = {
@@ -25,7 +23,7 @@ type Attempt = {
 };
 
 interface SafmedsMobileProps {
-  deckName?: string; // optional label for runs table (kept for now)
+  deckName?: string; // optional admin label
 }
 
 /* =========================
@@ -62,7 +60,15 @@ function shuffled<T>(arr: T[]): T[] {
 // Local (machine) midnight — aligns with your dev box
 function startOfToday(): Date {
   const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  return new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    0,
+    0,
+    0,
+    0
+  );
 }
 function endOfToday(): Date {
   const s = startOfToday();
@@ -75,6 +81,111 @@ function endOfToday(): Date {
 const DAILY_TARGET = 5;
 
 /* =========================
+   Tiny SVG chart (today, last 5)
+   Kept outside component to avoid remounting every tick
+========================= */
+function AttemptsChart({ attempts }: { attempts: Attempt[] }) {
+  const last = attempts.slice(-5);
+  const N = Math.max(1, last.length);
+
+  const W = 100;
+  const H = 44;
+  const PAD = 6;
+  const innerH = H - PAD * 2;
+
+  const X_L = 6;
+  const X_R = 94;
+
+  const pts = last.map((a) => ({ net: a.correct - a.incorrect }));
+
+  const vals = pts.map((p) => p.net);
+  let yMin = 0,
+    yMax = 1;
+  if (vals.length) {
+    const minV = Math.min(...vals);
+    const maxV = Math.max(...vals);
+    if (minV === maxV) {
+      yMin = Math.min(0, minV - 1);
+      yMax = maxV + 1;
+    } else {
+      const padY = Math.max(1, Math.round((maxV - minV) * 0.15));
+      yMin = Math.max(0, minV - padY);
+      yMax = maxV + padY;
+    }
+  }
+
+  const clamp = (v: number, lo: number, hi: number) =>
+    Math.max(lo, Math.min(hi, v));
+  const xOf = (i: number) => (N === 1 ? 50 : X_L + ((X_R - X_L) * i) / (N - 1));
+  const yOf = (v: number) => {
+    const t = (v - yMin) / Math.max(1, yMax - yMin);
+    const y = H - (t * innerH + PAD);
+    return clamp(y, PAD + 0.5, H - PAD - 0.5);
+  };
+
+  const GRID = 4;
+  const gridYs = Array.from({ length: GRID + 1 }, (_, i) => {
+    const t = i / GRID;
+    return H - (t * innerH + PAD);
+  });
+
+  const d = pts
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${xOf(i)},${yOf(p.net)}`)
+    .join(" ");
+
+  if (last.length === 0) {
+    return (
+      <div className="flex h-[140px] items-center justify-center text-xs text-gray-500">
+        No server runs today
+      </div>
+    );
+  }
+
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      className="h-[140px] w-full"
+      preserveAspectRatio="none"
+    >
+      {gridYs.map((gy, i) => (
+        <line
+          key={i}
+          x1={0}
+          y1={gy}
+          x2={W}
+          y2={gy}
+          stroke="currentColor"
+          opacity="0.06"
+          strokeWidth="0.3"
+        />
+      ))}
+      {pts.length > 1 && (
+        <path
+          d={d}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="0.35"
+          opacity="0.5"
+          strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
+      {pts.map((p, i) => (
+        <circle
+          key={i}
+          cx={xOf(i)}
+          cy={yOf(p.net)}
+          r={0.55}
+          className="fill-blue-600"
+          stroke="white"
+          strokeWidth={0.25}
+        />
+      ))}
+    </svg>
+  );
+}
+
+/* =========================
    Component
 ========================= */
 export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
@@ -84,12 +195,6 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
   // Controls
   const [duration, setDuration] = useState<number>(60); // 30 or 60
   const [shuffleOnStart, setShuffleOnStart] = useState<boolean>(true);
-
-  // Class / deck selection (like flashcards)
-  const [classCode, setClassCode] = useState<string>("");
-  const [deckNum, setDeckNum] = useState<number>(1);
-  const [classOptions, setClassOptions] = useState<string[]>([]);
-  const [deckNumOptions, setDeckNumOptions] = useState<number[]>([1]);
 
   // Cards
   const [cards, setCards] = useState<Card[]>(DEMO_CARDS);
@@ -129,107 +234,32 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
   // For UI feedback when not authenticated / session expired
   const [authWarning, setAuthWarning] = useState<string | null>(null);
 
-  // For simple “loading cards” status
-  const [loadingCards, setLoadingCards] = useState<boolean>(false);
+  // Visual feedback for last scored response
+  const [lastMarked, setLastMarked] = useState<"correct" | "incorrect" | null>(
+    null
+  );
 
   /* =========================
-     Meta: load class_codes + deck_numbers
+     Load cards from API
   ========================= */
   useEffect(() => {
     let cancelled = false;
 
-    async function loadMeta() {
+    (async () => {
       try {
-        const resp = await fetch("/api/flashcards/meta", { cache: "no-store" });
-        if (!resp.ok) return;
-        const json = await resp.json();
-        if (cancelled) return;
-
-        const classesFromDb: string[] = Array.isArray(json.class_codes)
-          ? json.class_codes.filter(
-              (x: any) =>
-                typeof x === "string" &&
-                x.trim() !== "" &&
-                x.trim().toUpperCase() !== "DEFAULT"
-            )
-          : [];
-
-        const deckNumsFromDb: number[] = Array.isArray(json.deck_numbers)
-          ? json.deck_numbers.filter((x: any) => typeof x === "number")
-          : [];
-
-        setClassOptions(Array.from(new Set(classesFromDb)).sort());
-        setDeckNumOptions((prev) => {
-          const set = new Set(prev);
-          deckNumsFromDb.forEach((n) => set.add(n));
-          if (!set.has(1)) set.add(1);
-          return Array.from(set).sort((a, b) => a - b);
-        });
-      } catch {
-        // keep defaults if meta fails
-      }
-    }
-
-    loadMeta();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // When class options arrive and none is chosen yet, pick the first
-  useEffect(() => {
-    if (!classCode && classOptions.length > 0) {
-      setClassCode(classOptions[0]);
-    }
-  }, [classCode, classOptions]);
-
-  /* =========================
-     Load cards from flashcards API
-     - filters by class_code + deck_number (like Flashcards page)
-  ========================= */
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadCards() {
-      if (!classCode) {
-        // Wait until we know which class to use
-        return;
-      }
-
-      setLoadingCards(true);
-      try {
-        const p = new URLSearchParams();
-        p.set("limit", "2000");
-        p.set("class_code", classCode);
-        if (deckNum) p.set("deck_number", String(deckNum));
-
-        const res = await fetch(`/api/flashcards?${p.toString()}`, {
+        const res = await fetch("/api/flashcards?limit=2000", {
           credentials: "include",
         });
         if (!res.ok) throw new Error("flashcards api error");
 
         const json = await res.json();
-        const rawList: any[] =
-          Array.isArray(json?.cards) && json.cards.length
-            ? json.cards
-            : Array.isArray(json?.data) && json.data.length
-            ? json.data
-            : [];
-
         const list: Card[] =
-          rawList.length > 0
-            ? rawList.map((c: any) => ({
+          Array.isArray(json?.cards) && json.cards.length
+            ? json.cards.map((c: any) => ({
                 id: String(c.id),
                 term: String(c.term ?? ""),
                 definition: String(c.definition ?? ""),
                 deck: c.deck ?? null,
-                class_code: c.class_code ?? null,
-                deck_number:
-                  typeof c.deck_number === "number"
-                    ? c.deck_number
-                    : c.deck_number
-                    ? Number(c.deck_number)
-                    : null,
               }))
             : DEMO_CARDS;
 
@@ -244,16 +274,13 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
           setIndex(0);
           setShowBack(false);
         }
-      } finally {
-        if (!cancelled) setLoadingCards(false);
       }
-    }
+    })();
 
-    loadCards();
     return () => {
       cancelled = true;
     };
-  }, [classCode, deckNum]);
+  }, []);
 
   /* =========================
      Timer tick
@@ -264,8 +291,10 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
     timerRef.current = setInterval(() => {
       setRemaining((t) => {
         if (t <= 1) {
-          if (timerRef.current) clearInterval(timerRef.current);
-          timerRef.current = null;
+          if (timerRef.current) {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+          }
           setRunning(false);
           saveRun(true); // auto-save at 0
           return 0;
@@ -275,7 +304,9 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
     }, 1000);
 
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running]);
@@ -308,7 +339,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
   }, [running, index]);
 
   /* =========================
-     Server: fetch today’s runs
+     Server: fetch today’s runs (direct from Supabase; RLS-safe)
   ========================= */
   async function fetchToday() {
     try {
@@ -324,6 +355,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
 
       if (error) throw error;
 
+      // Stable sort by time, then assign ordinal_today = 1..N
       const sorted = (data ?? []).slice().sort((a: any, b: any) => {
         return (
           new Date(a.run_started_at).getTime() -
@@ -367,19 +399,24 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
   ========================= */
   function startStop() {
     if (running) {
+      // Pause
       setRunning(false);
-      if (timerRef.current) clearInterval(timerRef.current);
-      timerRef.current = null;
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
     } else {
+      // Start new run
       const prepared = shuffleOnStart ? shuffled(cards) : cards;
       setCards(prepared);
-      setIndex(0);
-      setShowBack(false); // TERM first
+      setIndex(0); // ensure first card is active
+      setShowBack(false); // front (term) showing
       setCorrect(0);
       setIncorrect(0);
+      setLastMarked(null); // reset highlight
       setRemaining(duration);
       runStartRef.current = new Date().toISOString();
-      setRunning(true);
+      setRunning(true); // timer starts; first term is immediately live
     }
   }
 
@@ -398,24 +435,37 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
     setIndex((i) => (i - 1 + cards.length) % cards.length);
   }
 
+  // Score; flip is optional.
   function mark(ok: boolean) {
-    if (!running || !showBack) return; // only score when running & on definition
+    if (!running) return;
+
+    const which = ok ? "correct" : "incorrect";
+    setLastMarked(which);
+
     ok ? setCorrect((v) => v + 1) : setIncorrect((v) => v + 1);
     next();
+
+    // Hold the state long enough to clearly see it
+    setTimeout(() => {
+      setLastMarked((prev) => (prev === which ? null : prev));
+    }, 400);
   }
 
   function resetCounters() {
     setCorrect(0);
     setIncorrect(0);
+    setLastMarked(null);
   }
 
   /* =========================
      Save run to server
+     - Always fetch a fresh token to avoid "Auth session missing!"
   ========================= */
   async function saveRun(auto = false) {
     try {
       const now = new Date().toISOString();
 
+      // Get a fresh access token right before calling the API
       const { data: sessionRes } = await supabase.auth.getSession();
       const token = sessionRes?.session?.access_token ?? null;
 
@@ -427,10 +477,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
       }
 
       const body = {
-        // keep deckName for now so we don't break existing rows
-        deck:
-          deckName ||
-          (classCode ? `${classCode}-deck-${deckNum || 1}` : null),
+        deck: deckName || null,
         duration_seconds: duration,
         correct: correctRef.current,
         incorrect: incorrectRef.current,
@@ -457,7 +504,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
     } catch (e) {
       console.warn("Save run error:", e);
     } finally {
-      await fetchToday();
+      await fetchToday(); // refresh from server truth
       if (!auto) {
         // optional toast hook could go here
       }
@@ -486,113 +533,18 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
         a.incorrect,
         a.total,
         a.accuracy_pct,
-      ].join(","),
+      ].join(",")
     );
     const csv = [headers.join(","), ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `safmeds_today_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `safmeds_today_${new Date()
+      .toISOString()
+      .slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }
-
-  /* =========================
-     Tiny SVG chart (today, last 5)
-  ========================= */
-  function AttemptsChart() {
-    const last = attempts.slice(-5);
-    const N = Math.max(1, last.length);
-
-    const W = 100;
-    const H = 44;
-    const PAD = 6;
-    const innerH = H - PAD * 2;
-
-    const X_L = 6;
-    const X_R = 94;
-
-    const pts = last.map((a) => ({ net: a.correct - a.incorrect }));
-
-    const vals = pts.map((p) => p.net);
-    let yMin = 0,
-      yMax = 1;
-    if (vals.length) {
-      const minV = Math.min(...vals);
-      const maxV = Math.max(...vals);
-      if (minV === maxV) {
-        yMin = Math.min(0, minV - 1);
-        yMax = maxV + 1;
-      } else {
-        const padY = Math.max(1, Math.round((maxV - minV) * 0.15));
-        yMin = Math.max(0, minV - padY);
-        yMax = maxV + padY;
-      }
-    }
-
-    const clamp = (v: number, lo: number, hi: number) =>
-      Math.max(lo, Math.min(hi, v));
-    const xOf = (i: number) =>
-      N === 1 ? 50 : X_L + ((X_R - X_L) * i) / (N - 1);
-    const yOf = (v: number) => {
-      const t = (v - yMin) / Math.max(1, yMax - yMin);
-      const y = H - (t * innerH + PAD);
-      return clamp(y, PAD + 0.5, H - PAD - 0.5);
-    };
-
-    const GRID = 4;
-    const gridYs = Array.from({ length: GRID + 1 }, (_, i) => {
-      const t = i / GRID;
-      return H - (t * innerH + PAD);
-    });
-
-    const d = pts
-      .map((p, i) => `${i === 0 ? "M" : "L"} ${xOf(i)},${yOf(p.net)}`)
-      .join(" ");
-
-    return (
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        className="h-[140px] w-full"
-        preserveAspectRatio="none"
-      >
-        {gridYs.map((gy, i) => (
-          <line
-            key={i}
-            x1={0}
-            y1={gy}
-            x2={W}
-            y2={gy}
-            stroke="currentColor"
-            opacity="0.06"
-            strokeWidth="0.3"
-          />
-        ))}
-        {pts.length > 1 && (
-          <path
-            d={d}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="0.35"
-            opacity="0.5"
-            strokeLinecap="round"
-            vectorEffect="non-scaling-stroke"
-          />
-        )}
-        {pts.map((p, i) => (
-          <circle
-            key={i}
-            cx={xOf(i)}
-            cy={yOf(p.net)}
-            r={0.55}
-            className="fill-blue-600"
-            stroke="white"
-            strokeWidth={0.25}
-          />
-        ))}
-      </svg>
-    );
   }
 
   /* =========================
@@ -601,16 +553,36 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
   const runsToday = attempts.length;
   const targetPercent = Math.min(
     100,
-    Math.round((runsToday / DAILY_TARGET) * 100),
+    Math.round((runsToday / DAILY_TARGET) * 100)
   );
 
   /* =========================
      Render
   ========================= */
   const current = cards[index];
+  const correctActive = running && lastMarked === "correct";
+  const incorrectActive = running && lastMarked === "incorrect";
+
+  // Inline styles so we can *see* state changes no matter what Tailwind does
+  const correctStyle: React.CSSProperties = !running
+    ? { backgroundColor: "#86efac" } // light green when disabled
+    : correctActive
+    ? { backgroundColor: "#000000" } // BLACK when just clicked
+    : { backgroundColor: "#22c55e" }; // green when running
+
+  const incorrectStyle: React.CSSProperties = !running
+    ? { backgroundColor: "#fecaca" } // light red when disabled
+    : incorrectActive
+    ? { backgroundColor: "#000000" } // BLACK when just clicked
+    : { backgroundColor: "#ef4444" }; // red when running
 
   return (
     <main className="mx-auto max-w-screen-sm px-3 pb-28 pt-2 sm:px-4">
+      {/* DEBUG LABEL – if you don't see this, this file isn't what's rendering */}
+      <div className="mb-2 text-[10px] uppercase tracking-wide text-pink-600">
+        DEBUG SAFMEDS v5
+      </div>
+
       {/* Header: Start/Pause + Timer */}
       <header className="sticky top-0 z-30 -mx-3 mb-3 border-b bg-white/90 backdrop-blur supports-[backdrop-filter]:bg-white/60 sm:-mx-4">
         <div className="mx-auto flex max-w-screen-sm items-center gap-2 px-3 py-2 sm:px-4">
@@ -635,7 +607,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
       </header>
 
       {/* Controls */}
-      <section className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <section className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
         <label>
           <span className="block text-xs font-medium text-gray-600">
             Duration
@@ -663,46 +635,14 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
           <span className="text-sm">Shuffle on start</span>
         </label>
 
-        <label className="col-span-2 sm:col-span-1">
+        <div className="col-span-2 sm:col-span-1">
           <span className="block text-xs font-medium text-gray-600">
-            Class
+            Deck
           </span>
-          <select
-            value={classCode}
-            onChange={(e) => setClassCode(e.target.value)}
-            className="mt-1 w-full rounded-xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            {classOptions.length === 0 ? (
-              <option value="">(no classes)</option>
-            ) : (
-              classOptions.map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt}
-                </option>
-              ))
-            )}
-          </select>
-        </label>
-
-        <label className="col-span-2 sm:col-span-1">
-          <span className="block text-xs font-medium text-gray-600">
-            Deck #
-          </span>
-          <select
-            value={deckNum}
-            onChange={(e) => {
-              const n = Number(e.target.value);
-              setDeckNum(!Number.isFinite(n) || n <= 0 ? 1 : n);
-            }}
-            className="mt-1 w-full rounded-xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            {deckNumOptions.map((n) => (
-              <option key={n} value={n}>
-                {n}
-              </option>
-            ))}
-          </select>
-        </label>
+          <div className="mt-1 w-full rounded-xl border px-3 py-2 text-sm text-gray-700">
+            {deckName || "(admin-controlled)"}
+          </div>
+        </div>
       </section>
 
       {/* Daily target indicator */}
@@ -740,9 +680,11 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
           <span>
             Card {index + 1} of {cards.length}
           </span>
-          <span className="rounded-full bg-gray-100 px-2 py-0.5">
-            {(classCode || "Class")} • #{deckNum}
-          </span>
+          {!!deckName && (
+            <span className="rounded-full bg-gray-100 px-2 py-0.5">
+              {deckName}
+            </span>
+          )}
         </div>
 
         <div className="min-h-[140px] cursor-pointer" onClick={flip}>
@@ -756,33 +698,30 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
             </div>
           )}
           <p className="mt-3 text-[11px] text-gray-500">
-            {running ? "Tap / Space to flip" : "Start to enable flip & scoring"}
+            {running
+              ? "Tap / Space to flip (optional); use ✓ / ✕ to score"
+              : "Press Start to begin timing & scoring"}
           </p>
-          {loadingCards && (
-            <p className="mt-1 text-[11px] text-blue-500">
-              Loading cards for {classCode || "…"} deck #{deckNum}…
-            </p>
-          )}
         </div>
 
-        {/* Correct / Incorrect under the card */}
+      {/* Correct / Incorrect under the card */}
         <div className="mt-3 grid grid-cols-2 gap-2">
           <button
             onClick={() => mark(true)}
-            disabled={!running || !showBack}
-            className={`rounded-xl px-4 py-3 text-base font-semibold text-white shadow active:scale-[.99] ${
-              running && showBack
-                ? "bg-green-600"
-                : "bg-green-300 cursor-not-allowed"
+            disabled={!running}
+            style={correctStyle}
+            className={`rounded-xl px-4 py-3 text-base font-semibold text-white shadow transition-transform active:scale-[.97] ${
+              !running ? "cursor-not-allowed" : ""
             }`}
           >
             ✓ Correct ({correct})
           </button>
           <button
             onClick={() => mark(false)}
-            disabled={!running || !showBack}
-            className={`rounded-xl px-4 py-3 text-base font-semibold text-white shadow active:scale-[.99] ${
-              running && showBack ? "bg-red-600" : "bg-red-300 cursor-not-allowed"
+            disabled={!running}
+            style={incorrectStyle}
+            className={`rounded-xl px-4 py-3 text-base font-semibold text-white shadow transition-transform active:scale-[.97] ${
+              !running ? "cursor-not-allowed" : ""
             }`}
           >
             ✕ Incorrect ({incorrect})
@@ -808,12 +747,14 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
         </div>
         <div className="rounded-xl border p-2">
           <div className="text-gray-500">Accuracy</div>
-          <div className="text-lg font-semibold tabular-nums">{accuracy}%</div>
+          <div className="text-lg font-semibold tabular-nums">
+            {accuracy}%
+          </div>
         </div>
         <div className="rounded-xl border p-2">
-          <div className="text-gray-500">Set</div>
+          <div className="text-gray-500">Deck</div>
           <div className="text-lg font-semibold">
-            {(classCode || "Class") + " #" + deckNum}
+            {deckName || "(admin)"}
           </div>
         </div>
       </section>
@@ -846,13 +787,7 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
           <div className="text-xs text-gray-500">{attempts.length} run(s)</div>
         </div>
         <div className="w-full rounded-xl border bg-white">
-          {attempts.slice(-5).length === 0 ? (
-            <div className="flex h-[140px] items-center justify-center text-xs text-gray-500">
-              No server runs today
-            </div>
-          ) : (
-            <AttemptsChart />
-          )}
+          <AttemptsChart attempts={attempts} />
         </div>
         <div className="mt-1 px-1 text-[11px] text-gray-500">
           Showing last 5 attempts (Net = ✓ − ✕)
@@ -876,25 +811,28 @@ export default function SafmedsMobile({ deckName = "" }: SafmedsMobileProps) {
               </tr>
             </thead>
             <tbody>
-              {attempts.slice(-5).reverse().map((r, i) => (
-                <tr key={i} className="border-t">
-                  <td className="px-2 py-1 tabular-nums">
-                    {r.ordinal_today}
-                  </td>
-                  <td className="px-2 py-1">
-                    {new Date(r.timestampISO).toLocaleTimeString()}
-                  </td>
-                  <td className="px-2 py-1 tabular-nums">{r.correct}</td>
-                  <td className="px-2 py-1 tabular-nums">{r.incorrect}</td>
-                  <td className="px-2 py-1 tabular-nums">{r.total}</td>
-                  <td className="px-2 py-1 tabular-nums">
-                    {r.accuracy_pct}
-                  </td>
-                  <td className="px-2 py-1 tabular-nums">
-                    {r.duration_s}
-                  </td>
-                </tr>
-              ))}
+              {attempts
+                .slice(-5)
+                .reverse()
+                .map((r, i) => (
+                  <tr key={i} className="border-t">
+                    <td className="px-2 py-1 tabular-nums">
+                      {r.ordinal_today}
+                    </td>
+                    <td className="px-2 py-1">
+                      {new Date(r.timestampISO).toLocaleTimeString()}
+                    </td>
+                    <td className="px-2 py-1 tabular-nums">{r.correct}</td>
+                    <td className="px-2 py-1 tabular-nums">{r.incorrect}</td>
+                    <td className="px-2 py-1 tabular-nums">{r.total}</td>
+                    <td className="px-2 py-1 tabular-nums">
+                      {r.accuracy_pct}
+                    </td>
+                    <td className="px-2 py-1 tabular-nums">
+                      {r.duration_s}
+                    </td>
+                  </tr>
+                ))}
               {attempts.slice(-5).length === 0 && (
                 <tr>
                   <td

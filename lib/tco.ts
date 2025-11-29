@@ -141,6 +141,22 @@ export function getDomainTitle(domainLetter?: string | null) {
 
 export function getSubdomainText(code?: string | null) {
   if (!code) return "";
-  const key = code.toUpperCase();
-  return SUBDOMAIN_TEXT[key] ?? "";
+
+  const raw = code.toUpperCase().trim();
+
+  // If the code is padded (A01, B09, etc.) → convert to A1, B9, etc.
+  if (/^[A-I][0-9]{2}$/.test(raw)) {
+    const letter = raw[0];
+    const num = String(Number(raw.slice(1))); // "01" → 1, "09" → 9, "10" → 10
+    const unpadded = `${letter}${num}`;
+    return SUBDOMAIN_TEXT[unpadded] ?? "";
+  }
+
+  // If it's already unpadded (A1, B3, etc.)
+  if (/^[A-I][0-9]$/.test(raw)) {
+    return SUBDOMAIN_TEXT[raw] ?? "";
+  }
+
+  // Fallback – try raw key just in case
+  return SUBDOMAIN_TEXT[raw] ?? "";
 }

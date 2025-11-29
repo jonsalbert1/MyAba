@@ -1,13 +1,16 @@
 // pages/quiz/index.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
-import { useUser } from "@supabase/auth-helpers-react";
-import Link from "next/link";
-import { getDomainTitle } from "@/lib/tco";
+import { useUser, useSupabaseClient } from "@supabase/auth-helpers-react";
+import { getDomainTitle, getSubdomainText } from "@/lib/tco";
+
+/* =========================
+   Types / constants
+========================= */
 
 type DomainLetter = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I";
 
-const COUNTS: Record<DomainLetter, number> = {
+const DOMAIN_COUNTS: Record<DomainLetter, number> = {
   A: 5,
   B: 24,
   C: 12,
@@ -19,321 +22,569 @@ const COUNTS: Record<DomainLetter, number> = {
   I: 7,
 };
 
-type DomainStats = {
-  letter: DomainLetter;
-  title: string;
-  totalSubdomains: number;
-  completedSubdomains: number;
+const DOMAIN_ORDER: DomainLetter[] = [
+  "A",
+  "B",
+  "C",
+  "D",
+  "E",
+  "F",
+  "G",
+  "H",
+  "I",
+];
+
+type SubdomainProgress = {
+  code: string; // e.g. "A01"
+  done: boolean;
   bestAccuracy: number | null;
+  hasLive: boolean;
+  lastUpdated: number | null;
 };
 
-function makeDefaultStats(letter: DomainLetter): DomainStats {
-  const totalSubdomains = COUNTS[letter];
+type DomainProgress = {
+  domain: DomainLetter;
+  title: string;
+  subdomains: SubdomainProgress[];
+  completedCount: number;
+  avgBestAccuracy: number | null;
+  nextCode: string | null;
+};
+
+type Profile = {
+  first_name: string | null;
+  last_name: string | null;
+};
+
+type ProgressRow = {
+  domain: string; // "A"
+  subdomain: string; // "A01"
+  best_accuracy_percent: number | null;
+};
+
+/* =========================
+   Helpers
+========================= */
+
+function buildCode(domain: DomainLetter, index: number): string {
+  return `${domain}${index.toString().padStart(2, "0")}`;
+}
+
+// Base skeleton so UI renders instantly
+function makeEmptyDomainProgress(domain: DomainLetter): DomainProgress {
+  const count = DOMAIN_COUNTS[domain];
+  const subs: SubdomainProgress[] = [];
+
+  for (let i = 1; i <= count; i++) {
+    const code = buildCode(domain, i);
+    subs.push({
+      code,
+      done: false,
+      bestAccuracy: null,
+      hasLive: false,
+      lastUpdated: null,
+    });
+  }
+
   return {
-    letter,
-    title: getDomainTitle(letter) ?? "",
-    totalSubdomains,
-    completedSubdomains: 0,
-    bestAccuracy: null,
+    domain,
+    title: getDomainTitle(domain) ?? `Domain ${domain}`,
+    subdomains: subs,
+    completedCount: 0,
+    avgBestAccuracy: null,
+    nextCode: subs[0]?.code ?? null,
   };
 }
 
-function makeAllDefaultStats(): Record<DomainLetter, DomainStats> {
-  const init: Partial<Record<DomainLetter, DomainStats>> = {};
-  (Object.keys(COUNTS) as DomainLetter[]).forEach((L) => {
-    init[L] = makeDefaultStats(L);
+const INITIAL_PROGRESS: DomainProgress[] = DOMAIN_ORDER.map((d) =>
+  makeEmptyDomainProgress(d)
+);
+
+/**
+ * Recompute completedCount, avgBestAccuracy, nextCode
+ * after we've merged Supabase + any local in-progress info.
+ */
+function recomputeDomainStats(base: Record<DomainLetter, DomainProgress>) {
+  DOMAIN_ORDER.forEach((d) => {
+    const dom = base[d];
+
+    const doneSubs = dom.subdomains.filter((s) => s.done);
+    dom.completedCount = doneSubs.length;
+
+    if (doneSubs.length > 0) {
+      const sum = doneSubs.reduce(
+        (acc, s) => acc + (s.bestAccuracy ?? 0),
+        0
+      );
+      dom.avgBestAccuracy = sum / doneSubs.length;
+    } else {
+      dom.avgBestAccuracy = null;
+    }
+
+    const firstIncomplete = dom.subdomains.find((s) => !s.done);
+    dom.nextCode = firstIncomplete?.code ?? null;
   });
-  return init as Record<DomainLetter, DomainStats>;
 }
 
-// Helper to build zero-padded subdomain code, e.g. A01, B03
-function makeSubdomainCode(letter: DomainLetter, index: number): string {
-  return `${letter}${index.toString().padStart(2, "0")}`;
-}
+/* =========================
+   Component
+========================= */
 
 export default function QuizHomePage() {
-  const user = useUser();
   const router = useRouter();
-  const isSignedIn = !!user;
+  const user = useUser();
+  const supabase = useSupabaseClient();
 
-  const [stats, setStats] = useState<Record<DomainLetter, DomainStats>>(
-    () => makeAllDefaultStats()
-  );
-  const [isResetting, setIsResetting] = useState(false);
+  const [profile, setProfile] = useState<Profile | null>(null);
 
-  // Hydrate from localStorage on the client (ONLY when signed in)
+  // Domain cards: start with skeleton, then hydrate
+  const [progress, setProgress] = useState<DomainProgress[]>(INITIAL_PROGRESS);
+  const [loadingProgress, setLoadingProgress] = useState(false);
+
+  // ------- Profile: load or auto-create if missing -------
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (!user) return; // no progress when logged out
-
-    const updated: Partial<Record<DomainLetter, DomainStats>> = {};
-
-    (Object.keys(COUNTS) as DomainLetter[]).forEach((L) => {
-      const base = makeDefaultStats(L);
-      let completed = 0;
-      let bestAcc: number | null = null;
-
-      const totalSubdomains = COUNTS[L];
-
-      for (let i = 1; i <= totalSubdomains; i++) {
-        // 🔢 New zero-padded code (A01, B03, etc.)
-        const codeNew = makeSubdomainCode(L, i);
-        // 🧩 Legacy code (A1, B3, etc.) for backward compatibility
-        const codeOld = `${L}${i}`;
-
-        const doneKeyNew = `quiz:done:${L}:${codeNew}`;
-        const doneKeyOld = `quiz:done:${L}:${codeOld}`;
-        const accKeyNew = `quiz:accuracy:${L}:${codeNew}`;
-        const accKeyOld = `quiz:accuracy:${L}:${codeOld}`;
-
-        // Prefer new keys, but fall back to old ones if present
-        const doneNew = window.localStorage.getItem(doneKeyNew);
-        const doneOld = window.localStorage.getItem(doneKeyOld);
-
-        let isDone = doneNew === "1" || doneOld === "1";
-
-        // Optional migration: if only old key exists, copy it to new
-        if (!doneNew && doneOld === "1") {
-          window.localStorage.setItem(doneKeyNew, "1");
-        }
-
-        if (isDone) completed += 1;
-
-        const accStrNew = window.localStorage.getItem(accKeyNew);
-        const accStrOld = window.localStorage.getItem(accKeyOld);
-        const accStr = accStrNew ?? accStrOld ?? null;
-
-        if (accStr != null) {
-          const val = Number(accStr);
-          if (Number.isFinite(val)) {
-            // Optional migration for accuracy as well
-            if (!accStrNew && accStrOld != null) {
-              window.localStorage.setItem(accKeyNew, accStrOld);
-            }
-            bestAcc = bestAcc == null ? val : Math.max(bestAcc, val);
-          }
-        }
+    const loadProfile = async () => {
+      if (!user) {
+        setProfile(null);
+        return;
       }
 
-      updated[L] = {
-        letter: L,
-        title: base.title,
-        totalSubdomains,
-        completedSubdomains: completed,
-        bestAccuracy: bestAcc,
-      };
+      // 1) Try to load existing profile for this user
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("first_name, last_name")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (error) {
+        console.error("Quiz profile load error", error);
+      }
+
+      if (data) {
+        setProfile(data as Profile);
+        return;
+      }
+
+      // 2) No profile found -> ask server to create one using supabaseAdmin
+      try {
+        const res = await fetch("/api/profile/ensure", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: user.id }),
+        });
+        const json = await res.json();
+        if (!res.ok || !json.ok) {
+          console.error("ensure-profile failed", json.error);
+        }
+      } catch (e) {
+        console.error("ensure-profile request error", e);
+      }
+
+      // 3) Try loading again (in case insert worked)
+      const { data: data2, error: error2 } = await supabase
+        .from("profiles")
+        .select("first_name, last_name")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (error2) {
+        console.error("Quiz profile reload error", error2);
+      }
+
+      setProfile((data2 as Profile) ?? null);
+    };
+
+    loadProfile();
+  }, [user, supabase]);
+
+  const fullName =
+    (profile?.first_name?.trim() || "") +
+    (profile?.last_name ? ` ${profile.last_name.trim()}` : "");
+
+  const fallbackName = (() => {
+    if (!user?.email) return "there";
+    const local = user.email.split("@")[0] || "";
+    const cleaned = local.replace(/[._-]+/g, " ");
+    const parts = cleaned
+      .split(" ")
+      .filter(Boolean)
+      .map(
+        (p: string) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()
+      );
+    return parts.length > 0 ? parts.join(" ") : "there";
+  })();
+
+  const displayName =
+    fullName.trim().length > 0 ? fullName.trim() : fallbackName;
+
+  // ------- Load progress from Supabase + local in-progress flags -------
+  useEffect(() => {
+    if (!user) return;
+
+    const load = async () => {
+      setLoadingProgress(true);
+
+      try {
+        // 1) Base structure per domain
+        const base: Record<DomainLetter, DomainProgress> = {} as any;
+        DOMAIN_ORDER.forEach((d) => {
+          base[d] = makeEmptyDomainProgress(d);
+        });
+
+        // 2) Supabase rows (source of truth for completion & accuracy)
+        const { data, error } = await supabase
+          .from("quiz_subdomain_progress")
+          .select("*")
+          .eq("user_id", user.id);
+
+        if (error) {
+          console.error("quiz_subdomain_progress error", error);
+        } else {
+          const rows = (data ?? []) as ProgressRow[];
+
+          rows.forEach((row) => {
+            const domainLetter = row.domain.toUpperCase() as DomainLetter;
+            if (!DOMAIN_COUNTS[domainLetter]) return;
+
+            const domProg = base[domainLetter];
+            const code = row.subdomain; // "A01", etc.
+
+            const sub = domProg.subdomains.find((s) => s.code === code);
+            if (!sub) return;
+
+            if (row.best_accuracy_percent != null) {
+              sub.done = true;
+              sub.bestAccuracy = row.best_accuracy_percent;
+            }
+          });
+        }
+
+        // 3) Overlay *local in-progress only* (quiz:live)
+        //    We NO LONGER use local "done"/"accuracy" keys so that resets
+        //    in Supabase fully control completion/accuracy.
+        if (typeof window !== "undefined") {
+          try {
+            DOMAIN_ORDER.forEach((d) => {
+              const dom = base[d];
+
+              dom.subdomains.forEach((sub) => {
+                const liveKey = `quiz:live:${d}:${sub.code}`;
+                const liveRaw = window.localStorage.getItem(liveKey);
+
+                if (liveRaw) {
+                  try {
+                    const parsed = JSON.parse(liveRaw);
+                    if (
+                      typeof parsed?.answeredCount === "number" &&
+                      parsed.answeredCount > 0
+                    ) {
+                      sub.hasLive = true;
+                      sub.lastUpdated =
+                        typeof parsed.lastUpdated === "number"
+                          ? parsed.lastUpdated
+                          : null;
+                    }
+                  } catch {
+                    // ignore bad JSON
+                  }
+                }
+              });
+            });
+          } catch {
+            // localStorage blocked, ignore
+          }
+        }
+
+        // 4) Recompute per-domain stats after Supabase + in-progress overlay
+        recomputeDomainStats(base);
+
+        const finalProgress = DOMAIN_ORDER.map((d) => base[d]);
+        setProgress(finalProgress);
+      } finally {
+        setLoadingProgress(false);
+      }
+    };
+
+    load();
+  }, [user, supabase]);
+
+  const handleOpenDomain = (domain: DomainLetter) => {
+    router.push(`/quiz/${domain}`);
+  };
+
+  const handleOpenSubdomain = (_domain: DomainLetter, code: string) => {
+    router.push({
+      pathname: "/quiz/runner",
+      query: { code },
     });
+  };
 
-    setStats((prev) => ({ ...prev, ...(updated as any) }));
-  }, [user]);
+  // ------- Overall stats from merged progress -------
 
-  const domains = useMemo(
-    () => (Object.keys(COUNTS) as DomainLetter[]).map((L) => stats[L]),
-    [stats]
+  const totalSubdomains = DOMAIN_ORDER.reduce(
+    (sum, d) => sum + DOMAIN_COUNTS[d],
+    0
+  );
+  const totalCompleted = progress.reduce(
+    (sum, dom) => sum + dom.completedCount,
+    0
   );
 
-  // Overall progress (only meaningful if logged in)
-  const overall = useMemo(() => {
-    const totalSubdomains = (Object.keys(COUNTS) as DomainLetter[]).reduce(
-      (acc, L) => acc + COUNTS[L],
-      0
-    );
-    const completedSubdomains = domains.reduce(
-      (acc, d) => acc + d.completedSubdomains,
-      0
-    );
-    const percent = totalSubdomains
-      ? Math.round((completedSubdomains / totalSubdomains) * 100)
-      : 0;
+  const allAcc: number[] = [];
+  progress.forEach((dom) =>
+    dom.subdomains.forEach((s) => {
+      if (s.done && s.bestAccuracy != null) allAcc.push(s.bestAccuracy);
+    })
+  );
+  const overallAvgAccuracy =
+    allAcc.length > 0
+      ? allAcc.reduce((a, b) => a + b, 0) / allAcc.length
+      : null;
 
-    return { totalSubdomains, completedSubdomains, percent };
-  }, [domains]);
-
-  /** ⬇️ Route to /quiz/domain?domain=A etc */
-  function handleDomainClick(letter: DomainLetter) {
-    router.push({
-      pathname: "/quiz/domain",
-      query: { domain: letter },
-    });
-  }
-
-  /** 🔄 Clear all quiz progress (Supabase + localStorage) */
-  async function handleResetAll() {
-    if (!isSignedIn) return;
-    if (typeof window !== "undefined") {
-      const sure = window.confirm(
-        "This will clear all quiz progress (all domains and subdomains) and reset best scores. Continue?"
-      );
-      if (!sure) return;
-    }
-
-    setIsResetting(true);
-    try {
-      // Call API to delete rows for this user
-      const res = await fetch("/api/quiz/reset-progress", {
-        method: "POST",
-      });
-      if (!res.ok) {
-        console.error("Reset progress failed", await res.text());
+  // Last in-progress quiz from local "live" info
+  let lastActiveDomain: DomainLetter | null = null;
+  let lastActiveCode: string | null = null;
+  let lastTs = 0;
+  progress.forEach((dom) =>
+    dom.subdomains.forEach((s) => {
+      if (s.hasLive && s.lastUpdated && s.lastUpdated > lastTs) {
+        lastTs = s.lastUpdated;
+        lastActiveDomain = dom.domain;
+        lastActiveCode = s.code;
       }
-
-      // Clear localStorage keys used for quiz progress
-      if (typeof window !== "undefined") {
-        const keysToRemove: string[] = [];
-        for (let i = 0; i < window.localStorage.length; i++) {
-          const key = window.localStorage.key(i);
-          if (key && key.startsWith("quiz:")) {
-            keysToRemove.push(key);
-          }
-        }
-        keysToRemove.forEach((k) => window.localStorage.removeItem(k));
-      }
-
-      // Reset in-memory stats
-      setStats(makeAllDefaultStats());
-    } finally {
-      setIsResetting(false);
-    }
-  }
+    })
+  );
+  const hasAnyInProgress = lastActiveDomain && lastActiveCode;
+  const lastActiveText =
+    lastActiveCode != null ? getSubdomainText(lastActiveCode) ?? "" : "";
 
   return (
-    <main className="mx-auto max-w-4xl px-4 py-8">
-      {/* Header / hero */}
-      <header className="mb-6">
-        <h1 className="text-3xl font-semibold tracking-tight text-blue-900">
-          myABA.app Quiz Home
+    <main className="mx-auto max-w-5xl px-4 py-8 space-y-6">
+      {/* Header */}
+      <header className="space-y-2">
+        <h1 className="text-4xl font-bold tracking-tight text-blue-900">
+          BCBA Quiz Suite
         </h1>
-        <p className="mt-2 text-sm text-gray-600">
-          Work through BCBA® Task List Domains A–I with scenario-based
-          questions. Progress is tracked per subdomain when you&apos;re signed
-          in.
+        <p className="text-lg text-slate-700">
+          Welcome, <span className="font-semibold">{displayName}</span>.
         </p>
-
-        {!isSignedIn && (
-          <div className="mt-4 flex flex-wrap items-center gap-3">
-            <Link
-              href="/login"
-              className="rounded-md border bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-            >
-              Sign in to start
-            </Link>
-            <p className="text-xs text-gray-500">
-              You can browse domains and subdomains while signed out, but you
-              must sign in to take quizzes and save progress.
-            </p>
-          </div>
-        )}
       </header>
 
-      {/* Overall progress */}
-      <section className="mb-6 rounded-lg border p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
-          <div>
-            <span className="font-medium">Overall domains progress</span>{" "}
-            {isSignedIn ? (
-              <span className="text-gray-600">
-                · Completed{" "}
-                <strong>{overall.completedSubdomains}</strong> /{" "}
-                {overall.totalSubdomains} subdomains
-              </span>
-            ) : (
-              <span className="text-gray-600">
-                · Sign in to track progress across subdomains.
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-3">
-            {isSignedIn && (
-              <div className="text-xs text-gray-500">
-                {overall.percent}% complete
-              </div>
-            )}
-            {isSignedIn && (
-              <button
-                type="button"
-                onClick={handleResetAll}
-                disabled={isResetting}
-                className="rounded-md border px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-60"
-              >
-                {isResetting ? "Clearing…" : "Reset all quiz progress"}
-              </button>
-            )}
+      {/* Top Stats */}
+      <section className="grid gap-4 md:grid-cols-4">
+        <div className="rounded-xl border bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase text-gray-500">
+            Overall progress
+          </p>
+          <p className="mt-2 text-2xl font-semibold">
+            {totalCompleted}/{totalSubdomains}
+          </p>
+          <div className="mt-3 h-1.5 w-full rounded bg-gray-200 overflow-hidden">
+            <div
+              className="h-1.5 bg-blue-600"
+              style={{
+                width:
+                  totalSubdomains > 0
+                    ? `${Math.round(
+                        (totalCompleted / totalSubdomains) * 100
+                      )}%`
+                    : "0%",
+              }}
+            />
           </div>
         </div>
 
-        <div className="mt-2 h-2 w-full overflow-hidden rounded bg-gray-200">
-          <div
-            className={`h-2 rounded transition-all ${
-              isSignedIn ? "bg-blue-500" : "bg-gray-300"
-            }`}
-            style={{
-              width: isSignedIn ? `${overall.percent}%` : "0%",
-            }}
-          />
+        <div className="rounded-xl border bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase text-gray-500">
+            Average best accuracy
+          </p>
+          <p className="mt-2 text-2xl font-semibold">
+            {overallAvgAccuracy != null
+              ? `${overallAvgAccuracy.toFixed(0)}%`
+              : "—"}
+          </p>
+        </div>
+
+        <div className="rounded-xl border bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase text-gray-500">
+            Domains completed
+          </p>
+          <p className="mt-2 text-2xl font-semibold">
+            {
+              progress.filter(
+                (dom) => dom.completedCount === DOMAIN_COUNTS[dom.domain]
+              ).length
+            }
+            /{DOMAIN_ORDER.length}
+          </p>
+        </div>
+
+        {/* Continue */}
+        <div className="rounded-xl border bg-white p-4 shadow-sm flex flex-col justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase text-gray-500">
+              Continue
+            </p>
+            {hasAnyInProgress ? (
+              <>
+                <p className="mt-2 text-sm font-semibold">
+                  Resume your last quiz
+                </p>
+                <p className="text-xs text-gray-600 mt-1">
+                  Domain {lastActiveDomain} · {lastActiveCode}
+                  {lastActiveText && (
+                    <>
+                      {" — "}
+                      <span className="italic">{lastActiveText}</span>
+                    </>
+                  )}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="mt-2 text-sm font-semibold">
+                  No quiz in progress
+                </p>
+                <p className="text-xs text-gray-600 mt-1">
+                  Start with “Next up” from a domain card.
+                </p>
+              </>
+            )}
+          </div>
+
+          <button
+            type="button"
+            disabled={!hasAnyInProgress}
+            onClick={() =>
+              lastActiveDomain &&
+              lastActiveCode &&
+              router.push({
+                pathname: "/quiz/runner",
+                query: { code: lastActiveCode },
+              })
+            }
+            className="mt-3 w-full rounded-md border border-blue-600 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-40"
+          >
+            {hasAnyInProgress
+              ? `Continue: ${lastActiveCode}${
+                  lastActiveText ? ` — ${lastActiveText}` : ""
+                }`
+              : "No active quiz"}
+          </button>
         </div>
       </section>
 
-      {/* Domains grid */}
-      <section className="grid gap-4 md:grid-cols-3">
-        {(Object.keys(COUNTS) as DomainLetter[]).map((L) => {
-          const d = stats[L];
-          const completionPct = d.totalSubdomains
-            ? Math.round((d.completedSubdomains / d.totalSubdomains) * 100)
-            : 0;
+      {/* Domain Cards */}
+      <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {progress.map((dom) => {
+          const totalSubs = DOMAIN_COUNTS[dom.domain];
+          const done = dom.completedCount;
+          const percentDone =
+            totalSubs > 0 ? Math.round((done / totalSubs) * 100) : 0;
+          const accuracy = dom.avgBestAccuracy ?? 0;
+
+          const hasAnyLive = dom.subdomains.some(
+            (s) => s.hasLive && !s.done
+          );
+          const summaryButtonLabel = hasAnyLive ? "Continue" : "Next up";
+
+          const nextSubText =
+            dom.nextCode != null ? getSubdomainText(dom.nextCode) ?? "" : "";
 
           return (
-            <button
-              key={d.letter}
-              type="button"
-              onClick={() => handleDomainClick(d.letter)}
-              className="group flex flex-col items-stretch rounded-xl border bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+            <div
+              key={dom.domain}
+              onClick={() => handleOpenDomain(dom.domain)}
+              className="relative flex flex-col rounded-xl border bg-white p-4 shadow-sm cursor-pointer hover:bg-blue-50 transition"
             >
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-900 text-sm font-semibold text-white">
-                      {d.letter}
-                    </span>
-                    <h2 className="text-sm font-semibold">
-                      Domain {d.letter}
-                    </h2>
+              <div className="pointer-events-none">
+                <div className="flex justify-between">
+                  <div>
+                    <p className="text-xs font-semibold uppercase text-gray-500">
+                      Domain {dom.domain}
+                    </p>
+                    <p className="text-sm font-medium">{dom.title}</p>
                   </div>
-                  {d.title && (
-                    <p className="mt-1 text-xs text-gray-600">{d.title}</p>
-                  )}
+                  <div className="text-xs text-right text-gray-500">
+                    <div>
+                      Completed:{" "}
+                      <span className="font-semibold">
+                        {done}/{totalSubs}
+                      </span>
+                    </div>
+                    <div>
+                      Avg best:{" "}
+                      <span className="font-semibold">
+                        {dom.avgBestAccuracy != null
+                          ? `${dom.avgBestAccuracy.toFixed(0)}%`
+                          : "—"}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                {isSignedIn && (
-                  <div className="text-right text-[11px] text-gray-500">
-                    <div>
-                      {d.completedSubdomains} / {d.totalSubdomains} done
+
+                <div className="mt-3 space-y-2">
+                  <div>
+                    <div className="flex justify-between text-[10px] text-gray-500">
+                      <span>Completion</span>
+                      <span>{percentDone}%</span>
                     </div>
-                    <div>
-                      Best:{" "}
-                      {d.bestAccuracy != null ? `${d.bestAccuracy}%` : "—"}
+                    <div className="h-1.5 bg-gray-200 rounded overflow-hidden">
+                      <div
+                        className="h-1.5 bg-blue-600"
+                        style={{ width: `${percentDone}%` }}
+                      />
                     </div>
                   </div>
-                )}
+
+                  <div>
+                    <div className="flex justify-between text-[10px] text-gray-500">
+                      <span>Accuracy</span>
+                      <span>
+                        {dom.avgBestAccuracy != null
+                          ? `${dom.avgBestAccuracy.toFixed(0)}%`
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="h-1.5 bg-gray-200 rounded overflow-hidden">
+                      <div
+                        className="h-1.5 bg-emerald-500"
+                        style={{
+                          width:
+                            dom.avgBestAccuracy != null
+                              ? `${Math.min(Math.max(accuracy, 0), 100)}%`
+                              : "0%",
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              {/* Per-domain progress bar */}
-              <div className="mt-1 h-1.5 w-full overflow-hidden rounded bg-gray-200">
-                <div
-                  className={`h-1.5 rounded transition-all ${
-                    isSignedIn ? "bg-green-500" : "bg-gray-300"
-                  }`}
-                  style={{
-                    width: isSignedIn ? `${completionPct}%` : "0%",
+              {dom.nextCode && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleOpenSubdomain(dom.domain, dom.nextCode!);
                   }}
-                />
-              </div>
-
-              <div className="mt-3 text-xs text-gray-600">
-                <span className="font-medium">Tap to view subdomains</span>
-              </div>
-            </button>
+                  className="pointer-events-auto mt-3 rounded-md border border-blue-600 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                >
+                  {summaryButtonLabel}: {dom.nextCode}
+                  {nextSubText && ` — ${nextSubText}`}
+                </button>
+              )}
+            </div>
           );
         })}
       </section>
+
+      {loadingProgress && (
+        <p className="text-xs text-gray-500 mt-2">
+          Loading quiz progress from server…
+        </p>
+      )}
     </main>
   );
 }
+

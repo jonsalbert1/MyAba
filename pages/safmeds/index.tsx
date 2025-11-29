@@ -1,220 +1,238 @@
 // pages/safmeds/index.tsx
-import Head from "next/head";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useUser } from "@supabase/auth-helpers-react";
+import { useUser, useSupabaseClient } from "@supabase/auth-helpers-react";
 
-type WeekSummary = {
-  total_runs: number;
-  total_correct: number;
-  total_incorrect: number;
-  total_cards: number;
-  days_practiced: number;
-  decks_count: number;
-  first_run?: string | null;
-  last_run?: string | null;
+type Summary = {
+  runs: number;
+  correct: number;
+  incorrect: number;
 };
 
-export default function SafmedsHomePage() {
+type WeekSummary = Summary;
+
+type Profile = {
+  first_name: string | null;
+  last_name: string | null;
+};
+
+// Same helper we used in trials.tsx
+function getTodayLocalYMD(): string {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+export default function SafmedsHome() {
   const user = useUser();
-  const [summary, setSummary] = useState<WeekSummary | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const supabase = useSupabaseClient();
 
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [today, setToday] = useState<Summary | null>(null);
+  const [week, setWeek] = useState<WeekSummary | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Load profile (same as Home)
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadSummary() {
-      setLoading(true);
-      setErrorMsg(null);
-      try {
-        const resp = await fetch("/api/safmeds/week-summary", { cache: "no-store" });
-        if (!resp.ok) {
-          const text = await resp.text();
-          throw new Error(`HTTP ${resp.status}: ${text.slice(0, 200)}`);
-        }
-        const json = await resp.json();
-        if (cancelled) return;
-
-        if (json?.ok && json.summary) {
-          setSummary(json.summary as WeekSummary);
-        } else {
-          setSummary(null);
-          setErrorMsg(json?.error || "No summary available for this week yet.");
-        }
-      } catch (e: any) {
-        if (cancelled) return;
-        setSummary(null);
-        setErrorMsg(e?.message ?? "Unable to load SAFMEDS summary.");
-      } finally {
-        if (!cancelled) setLoading(false);
+    const loadProfile = async () => {
+      if (!user) {
+        setProfile(null);
+        return;
       }
-    }
 
-    loadSummary();
-    return () => {
-      cancelled = true;
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("first_name, last_name")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (error) {
+        console.error("SAFMEDS profile load error", error);
+      }
+
+      setProfile((data as Profile) ?? null);
     };
-  }, []);
+
+    loadProfile();
+  }, [user, supabase]);
+
+  const fullName =
+    (profile?.first_name?.trim() || "") +
+    (profile?.last_name ? ` ${profile.last_name.trim()}` : "");
+
+  const fallbackName = (() => {
+    if (!user?.email) return "there";
+    const local = user.email.split("@")[0] || "";
+    const cleaned = local.replace(/[._-]+/g, " ");
+    const parts = cleaned
+      .split(" ")
+      .filter(Boolean)
+      .map(
+        (p: string) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()
+      );
+    return parts.length > 0 ? parts.join(" ") : "there";
+  })();
 
   const displayName =
-    (user?.user_metadata && (user.user_metadata.full_name || user.user_metadata.name)) ||
-    user?.email ||
-    "student";
+    fullName.trim().length > 0 ? fullName.trim() : fallbackName;
 
-  const hasData = !!summary && summary.total_runs > 0;
+  useEffect(() => {
+    if (!user) return;
+
+    const load = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+
+        const uid = encodeURIComponent(user.id);
+        const todayStr = getTodayLocalYMD();
+
+        const [todayRes, weekRes] = await Promise.all([
+          fetch(
+            `/api/safmeds/today-count?user_id=${uid}&local_day=${todayStr}`
+          ),
+          fetch(`/api/safmeds/week?user_id=${uid}`),
+        ]);
+
+        const todayJson = await todayRes.json();
+        const weekJson = await weekRes.json();
+
+        if (!todayJson.ok) {
+          setError(todayJson.error ?? "Error loading today stats");
+        } else {
+          setToday(todayJson.today);
+        }
+
+        if (!weekJson.ok) {
+          setError(
+            (prev) => prev ?? weekJson.error ?? "Error loading week stats"
+          );
+        } else {
+          setWeek(weekJson.week);
+        }
+      } catch (e: any) {
+        console.error("Error loading SAFMEDS summary:", e);
+        setError(e?.message ?? "Unknown error loading summary");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, [user]);
 
   return (
-    <>
-      <Head>
-        <title>SAFMEDS • MyABA</title>
-        <meta
-          name="description"
-          content="Timed SAFMEDS trials with weekly summaries for fluent BCBA prep."
-        />
-      </Head>
+    <div className="max-w-4xl mx-auto px-4 py-8 space-y-6">
+      <header className="space-y-2">
+        <h1 className="text-3xl md:text-5xl font-semibold tracking-tight text-blue-900">
+          SAFMEDS Dashboard
+        </h1>
+        <p className="text-lg text-slate-700">
+          Welcome, <span className="font-semibold">{displayName}</span> 👋
+        </p>
+      </header>
 
-      <main className="mx-auto max-w-4xl p-6">
-        {/* Header / welcome */}
-        <header className="mb-8">
-          <p className="text-sm uppercase tracking-[0.2em] text-zinc-500">
-            SAFMEDS
-          </p>
-          <h1 className="mt-1 text-3xl font-semibold tracking-tight text-zinc-900">
-            Welcome, {displayName}.
-          </h1>
-          <p className="mt-2 text-sm text-zinc-600">
-            Here’s your week-to-date SAFMEDS summary. When you’re ready, jump in and
-            start today’s trials.
-          </p>
-        </header>
-
-        {/* Start trials CTA */}
-        <section className="mb-8">
-          <Link
-            href="/safmeds/runner"
-            className="
-              inline-flex items-center justify-center
-              rounded-2xl border border-indigo-500 bg-indigo-600
-              px-8 py-4 text-lg font-semibold text-white
-              shadow-md shadow-indigo-500/30
-              hover:bg-indigo-500 hover:shadow-lg hover:shadow-indigo-500/40
-              focus:outline-none focus:ring-2 focus:ring-indigo-500/70
-              active:scale-[0.98]
-              transition
-            "
-          >
-            Start trials for today
-          </Link>
-          <p className="mt-2 text-xs text-zinc-500">
-            This will open the SAFMEDS runner with your current settings.
-          </p>
-        </section>
-
-        {/* Week summary card */}
-        <section
-          className="
-            rounded-2xl border bg-white p-6 shadow-sm
-            flex flex-col gap-4
-          "
+      <nav className="flex flex-wrap gap-3">
+        <Link
+          href="/safmeds/trials"
+          className="rounded-xl border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50 shadow-sm"
         >
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-semibold text-zinc-900">
-                Week-to-date summary
-              </h2>
-              <p className="text-xs text-zinc-500">
-                Based on runs recorded since the start of this week.
+          ➤ Start New Timings
+        </Link>
+        <Link
+          href="/safmeds/week"
+          className="rounded-xl border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50 shadow-sm"
+        >
+          📈 Show All Runs (Last 7 Days)
+        </Link>
+        <Link
+          href="/safmeds/downloads"
+          className="rounded-xl border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50 shadow-sm"
+        >
+          ⬇ Downloads & Reports
+        </Link>
+      </nav>
+
+      {error && (
+        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+          {error}
+        </div>
+      )}
+
+      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Today's performance */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <h2 className="text-lg font-semibold text-slate-800 mb-2">
+            Today&apos;s Performance
+          </h2>
+          {loading && <p className="text-sm text-slate-500">Loading…</p>}
+          {!loading && today && (
+            <div className="space-y-1 text-sm">
+              <p>
+                Runs:{" "}
+                <span className="font-semibold">
+                  {today.runs}
+                </span>
+              </p>
+              <p>
+                Correct:{" "}
+                <span className="font-semibold">
+                  {today.correct}
+                </span>
+              </p>
+              <p>
+                Incorrect:{" "}
+                <span className="font-semibold">
+                  {today.incorrect}
+                </span>
               </p>
             </div>
-            <Link
-              href="/safmeds/week"
-              className="text-xs font-medium text-indigo-600 hover:underline"
-            >
-              View detailed weekly report →
-            </Link>
-          </div>
-
-          {loading && (
-            <p className="text-sm text-zinc-500">Loading SAFMEDS data…</p>
           )}
-
-          {!loading && errorMsg && (
-            <p className="text-sm text-red-600">
-              {errorMsg}{" "}
-              <span className="text-zinc-500">
-                Try running a few trials, then refresh this page.
-              </span>
+          {!loading && !today && (
+            <p className="text-sm text-slate-500">
+              No SAFMEDS runs recorded yet for today.
             </p>
           )}
+        </div>
 
-          {!loading && !errorMsg && summary && (
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-              <div className="rounded-xl border bg-zinc-50 px-4 py-3">
-                <p className="text-xs uppercase tracking-wide text-zinc-500">
-                  Total runs
-                </p>
-                <p className="mt-1 text-2xl font-semibold text-zinc-900">
-                  {summary.total_runs}
-                </p>
-              </div>
-
-              <div className="rounded-xl border bg-zinc-50 px-4 py-3">
-                <p className="text-xs uppercase tracking-wide text-zinc-500">
-                  Correct
-                </p>
-                <p className="mt-1 text-2xl font-semibold text-emerald-700">
-                  {summary.total_correct}
-                </p>
-              </div>
-
-              <div className="rounded-xl border bg-zinc-50 px-4 py-3">
-                <p className="text-xs uppercase tracking-wide text-zinc-500">
-                  Incorrect
-                </p>
-                <p className="mt-1 text-2xl font-semibold text-rose-700">
-                  {summary.total_incorrect}
-                </p>
-              </div>
-
-              <div className="rounded-xl border bg-zinc-50 px-4 py-3">
-                <p className="text-xs uppercase tracking-wide text-zinc-500">
-                  Total cards
-                </p>
-                <p className="mt-1 text-2xl font-semibold text-zinc-900">
-                  {summary.total_cards}
-                </p>
-              </div>
-
-              <div className="rounded-xl border bg-zinc-50 px-4 py-3">
-                <p className="text-xs uppercase tracking-wide text-zinc-500">
-                  Days practiced
-                </p>
-                <p className="mt-1 text-2xl font-semibold text-zinc-900">
-                  {summary.days_practiced}
-                </p>
-              </div>
-
-              <div className="rounded-xl border bg-zinc-50 px-4 py-3">
-                <p className="text-xs uppercase tracking-wide text-zinc-500">
-                  Decks used
-                </p>
-                <p className="mt-1 text-2xl font-semibold text-zinc-900">
-                  {summary.decks_count}
-                </p>
-              </div>
+        {/* Last 7 days */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <h2 className="text-lg font-semibold text-slate-800 mb-2">
+            Last 7 Days
+          </h2>
+          {loading && <p className="text-sm text-slate-500">Loading…</p>}
+          {!loading && week && (
+            <div className="space-y-1 text-sm">
+              <p>
+                Runs:{" "}
+                <span className="font-semibold">
+                  {week.runs}
+                </span>
+              </p>
+              <p>
+                Correct:{" "}
+                <span className="font-semibold">
+                  {week.correct}
+                </span>
+              </p>
+              <p>
+                Incorrect:{" "}
+                <span className="font-semibold">
+                  {week.incorrect}
+                </span>
+              </p>
             </div>
           )}
-
-          {!loading && !errorMsg && !hasData && (
-            <p className="text-sm text-zinc-500">
-              No SAFMEDS runs logged for this week yet. Click{" "}
-              <span className="font-medium">“Start trials for today”</span> above
-              to record your first timing.
+          {!loading && !week && (
+            <p className="text-sm text-slate-500">
+              No data yet for the last 7 days.
             </p>
           )}
-        </section>
-      </main>
-    </>
+        </div>
+      </section>
+    </div>
   );
 }

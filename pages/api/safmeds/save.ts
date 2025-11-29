@@ -68,8 +68,7 @@ export default async function handler(
         .json({ ok: false, error: "Daily limit of 5 SAFMEDS runs reached" });
     }
 
-    const nowIso = new Date().toISOString(); // will be cast into local_ts (timestamp without tz)
-
+    // 🔧 DO NOT send local_ts – let Postgres handle its default / generated value
     const { data, error: insertErr } = await supabaseAdmin
       .from("safmeds_runs")
       .insert([
@@ -79,7 +78,6 @@ export default async function handler(
           incorrect: ic,
           net_score,
           local_day, // date column
-          local_ts: nowIso,
           duration_seconds: duration_seconds ?? null,
           deck: deck ?? null,
           notes: notes ?? null,

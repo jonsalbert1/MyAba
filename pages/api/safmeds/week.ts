@@ -1,105 +1,93 @@
 // pages/api/safmeds/week.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import { createPagesServerClient } from "@supabase/auth-helpers-nextjs";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-type WeeklyRow = {
-  run_date: string;        // "2025-11-18"
-  best_correct: number;    // best correct for that day
-  total_runs: number;      // how many runs that day
-  avg_correct: number;     // average correct that day (rounded)
+type WeekSummary = {
+  runs: number;
+  correct: number;
+  incorrect: number;
 };
+
+type SafmedsRunRow = {
+  id: string;
+  user_id: string;
+  local_day?: string | null;
+  local_ts?: string | null;
+  correct: number | null;
+  incorrect: number | null;
+  net_score?: number | null;
+  duration_seconds?: number | null;
+  deck?: string | null;
+  notes?: string | null;
+  created_at: string;
+};
+
+type ApiResponse =
+  | { ok: true; week: WeekSummary | null; runs: SafmedsRunRow[] }
+  | { ok: false; error: string };
 
 export default async function handler(
   req: NextApiRequest,
-  res: NextApiResponse
+  res: NextApiResponse<ApiResponse>
 ) {
-  res.setHeader("Cache-Control", "no-store");
-
   if (req.method !== "GET") {
-    return res.status(405).json({ ok: false, error: "Use GET" });
+    res.setHeader("Allow", ["GET"]);
+    return res.status(405).json({ ok: false, error: "Method Not Allowed" });
+  }
+
+  const userId = (req.query.user_id as string | undefined)?.trim();
+  if (!userId) {
+    return res.status(400).json({ ok: false, error: "Missing user_id" });
   }
 
   try {
-    const supabase = createPagesServerClient({ req, res });
-
-    const {
-      data: { user },
-      error: userErr,
-    } = await supabase.auth.getUser();
-
-    if (userErr) {
-      console.error("safmeds/week getUser error", userErr);
-    }
-
-    if (!user) {
-      return res.status(401).json({ ok: false, error: "Not authenticated" });
-    }
-
-    // last 7 days (today + previous 6)
     const now = new Date();
-    const from = new Date();
-    from.setDate(now.getDate() - 6);
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-    const fromISO = from.toISOString();
-
-    const { data, error } = await supabase
+    // Pull recent runs for this user and then filter to last 7 days in code
+    const { data, error } = await supabaseAdmin
       .from("safmeds_runs")
       .select(
-        "created_at, cards_correct, cards_incorrect, duration_setting_seconds"
+        "id,user_id,local_day,local_ts,correct,incorrect,net_score,duration_seconds,deck,notes,created_at"
       )
-      .eq("user_id", user.id)
-      .gte("created_at", fromISO)
-      .order("created_at", { ascending: true });
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true })
+      .limit(500);
 
     if (error) {
-      console.error("safmeds/week select error", error);
-      return res.status(500).json({
-        ok: false,
-        error: "Failed to load SAFMEDS weekly summary",
-      });
+      console.error("week supabase error:", error);
+      return res.status(500).json({ ok: false, error: error.message });
     }
 
-    const byDate: Record<
-      string,
-      { best: number; totalRuns: number; sumCorrect: number }
-    > = {};
+    const allRuns = (data ?? []) as SafmedsRunRow[];
 
-    for (const row of data ?? []) {
-      const createdAt = row.created_at as string;
-      if (!createdAt) continue;
+    const runs = allRuns.filter((row) => {
+      const d = new Date(row.created_at);
+      return d >= sevenDaysAgo && d <= now;
+    });
 
-      const d = new Date(createdAt);
-      const dateKey = d.toISOString().slice(0, 10); // YYYY-MM-DD
-
-      const correct = Number(row.cards_correct ?? 0);
-
-      if (!byDate[dateKey]) {
-        byDate[dateKey] = {
-          best: correct,
-          totalRuns: 1,
-          sumCorrect: correct,
-        };
-      } else {
-        byDate[dateKey].best = Math.max(byDate[dateKey].best, correct);
-        byDate[dateKey].totalRuns += 1;
-        byDate[dateKey].sumCorrect += correct;
-      }
+    if (!runs.length) {
+      return res.status(200).json({ ok: true, week: null, runs: [] });
     }
 
-    const rows: WeeklyRow[] = Object.entries(byDate)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([dateKey, agg]) => ({
-        run_date: dateKey,
-        best_correct: agg.best,
-        total_runs: agg.totalRuns,
-        avg_correct: Math.round(agg.sumCorrect / agg.totalRuns),
-      }));
+    let totalCorrect = 0;
+    let totalIncorrect = 0;
+    runs.forEach((r) => {
+      totalCorrect += r.correct ?? 0;
+      totalIncorrect += r.incorrect ?? 0;
+    });
 
-    return res.status(200).json({ ok: true, rows });
-  } catch (err: any) {
-    console.error("safmeds/week exception", err);
+    const weekSummary: WeekSummary = {
+      runs: runs.length,
+      correct: totalCorrect,
+      incorrect: totalIncorrect,
+    };
+
+    return res.status(200).json({ ok: true, week: weekSummary, runs });
+  } catch (e: any) {
+    console.error("week handler exception:", e);
     return res
       .status(500)
-      .json({ ok: false, error: err?.message ?? "Unexpected error" });
+      .json({ ok: false, error: e?.message ?? "Unknown server error" });
   }
 }

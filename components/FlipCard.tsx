@@ -12,53 +12,51 @@ export default function FlipCard({
   back: ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-center w-full">
+    <div
+      // Outer wrapper: square card with perspective
+      style={{
+        aspectRatio: "1 / 1",
+        perspective: "1200px",
+      }}
+      className="relative w-full max-w-sm mx-auto cursor-pointer"
+      onClick={onToggle}
+      role="button"
+      tabIndex={0}
+    >
       <div
-        className="
-          relative
-          aspect-square
-          w-[90vw] max-w-[380px] sm:max-w-[420px] lg:max-w-[480px]
-          card-surface border border-slate-200 bg-white
-          rounded-2xl shadow-md
-          cursor-pointer
-          p-0
-        "
+        // Flipping container
+        style={{
+          position: "relative",
+          width: "100%",
+          height: "100%",
+          transformStyle: "preserve-3d",
+          transition: "transform 0.5s",
+          transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)",
+        }}
       >
-        <div className="perspective-1200 w-full h-full">
-          <div
-            className={`
-              relative w-full h-full preserve-3d
-              transition-transform duration-500 gpu-hint
-              ${flipped ? "rotate-y-180" : ""}
-            `}
-            onClick={onToggle}
-            role="button"
-            tabIndex={0}
-          >
-            {/* FRONT */}
-            <div
-              className="
-                absolute inset-0 backface-hidden
-                rounded-2xl bg-white text-slate-900
-                p-6 flex items-center justify-center
-                text-center
-              "
-            >
-              {front}
-            </div>
+        {/* FRONT */}
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            backfaceVisibility: "hidden",
+          }}
+          className="border border-slate-200 bg-white rounded-xl p-4 flex items-center justify-center text-center text-lg font-medium text-slate-900 shadow-sm"
+        >
+          {front}
+        </div>
 
-            {/* BACK */}
-            <div
-              className="
-                absolute inset-0 backface-hidden rotate-y-180
-                rounded-2xl bg-white text-slate-900
-                p-6 flex items-center justify-center
-                text-center
-              "
-            >
-              {back}
-            </div>
-          </div>
+        {/* BACK */}
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            backfaceVisibility: "hidden",
+            transform: "rotateY(180deg)",
+          }}
+          className="border border-slate-200 bg-white rounded-xl p-4 flex items-center justify-center text-center text-lg font-medium text-slate-900 shadow-sm"
+        >
+          {back}
         </div>
       </div>
     </div>

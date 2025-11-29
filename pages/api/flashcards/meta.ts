@@ -1,74 +1,128 @@
+// pages/api/flashcards/meta.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import { createPagesServerClient } from "@supabase/auth-helpers-nextjs";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-function sErr(e: any): string {
-  try {
-    if (typeof e === "string") return e;
-    if (e?.message) return String(e.message);
-    return JSON.stringify(e);
-  } catch {
-    return String(e);
-  }
-}
+type DeckMeta = {
+  class_code: string;
+  deck_number: number;
+};
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+type Card = {
+  id: string;
+  term: string;
+  definition: string;
+  class_code: string;
+  deck_number: number;
+};
+
+type MetaResponse =
+  | {
+      ok: true;
+      mode: "decks";
+      decks: DeckMeta[];
+    }
+  | {
+      ok: true;
+      mode: "cards";
+      data: Card[];
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+const TABLE = "cards";
+
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse<MetaResponse>
+) {
   if (req.method !== "GET") {
+    res.setHeader("Allow", ["GET"]);
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
   try {
-    const supabase = createPagesServerClient({ req, res });
+    const { class_code, deck_number } = req.query;
 
-    // We’ll query only the primary table "cards" for meta.
-    // If you REALLY want to support "flashcards" fallback too, we can extend this later.
-    const table = "cards";
+    // -------------------------------------------------------------------
+    // 1) If class_code + deck_number are provided → return CARDS mode
+    // -------------------------------------------------------------------
+    if (class_code && deck_number) {
+      const cc = String(class_code);
+      const dn = Number(deck_number);
 
-    // Distinct class_code
-    const { data: classRows, error: classErr } = await supabase
-      .from(table)
-      .select("class_code", { distinct: true })
+      console.log("flashcards/meta cards mode", { cc, dn });
+
+      const { data, error } = await supabaseAdmin
+        .from(TABLE)
+        .select(
+          "id, term, definition, class_code, deck_number"
+        )
+        .eq("class_code", cc)
+        .eq("deck_number", dn)
+        .order("term", { ascending: true });
+
+      if (error) {
+        console.error("cards query error", error);
+        return res
+          .status(500)
+          .json({ ok: false, error: error.message ?? "Error loading cards" });
+      }
+
+      return res.status(200).json({
+        ok: true,
+        mode: "cards",
+        data: (data ?? []) as Card[],
+      });
+    }
+
+    // -------------------------------------------------------------------
+    // 2) Otherwise → return DECKS mode (distinct class_code/deck_number)
+    // -------------------------------------------------------------------
+    console.log("flashcards/meta decks mode");
+
+    const { data, error } = await supabaseAdmin
+      .from(TABLE)
+      .select("class_code, deck_number")
       .not("class_code", "is", null)
-      .order("class_code", { ascending: true });
-
-    if (classErr) throw classErr;
-
-    // Distinct deck
-    const { data: deckRows, error: deckErr } = await supabase
-      .from(table)
-      .select("deck", { distinct: true })
-      .not("deck", "is", null)
-      .order("deck", { ascending: true });
-
-    if (deckErr) throw deckErr;
-
-    // Distinct deck_number
-    const { data: deckNumRows, error: deckNumErr } = await supabase
-      .from(table)
-      .select("deck_number", { distinct: true })
       .not("deck_number", "is", null)
+      .order("class_code", { ascending: true })
       .order("deck_number", { ascending: true });
 
-    if (deckNumErr) throw deckNumErr;
+    if (error) {
+      console.error("decks query error", error);
+      return res
+        .status(500)
+        .json({ ok: false, error: error.message ?? "Error loading decks" });
+    }
 
-    const class_codes = (classRows ?? [])
-      .map((r: any) => r.class_code as string)
-      .filter((x) => !!x);
+    const rows = (data ?? []) as { class_code: string; deck_number: number }[];
 
-    const decks = (deckRows ?? [])
-      .map((r: any) => r.deck as string)
-      .filter((x) => !!x);
-
-    const deck_numbers = (deckNumRows ?? [])
-      .map((r: any) => r.deck_number as number)
-      .filter((x) => typeof x === "number");
+    // JS-side dedupe of (class_code, deck_number)
+    const seen = new Set<string>();
+    const decks: DeckMeta[] = [];
+    for (const row of rows) {
+      if (!row.class_code || row.deck_number == null) continue;
+      const key = `${row.class_code}::${row.deck_number}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      decks.push({
+        class_code: row.class_code,
+        deck_number: row.deck_number,
+      });
+    }
 
     return res.status(200).json({
       ok: true,
-      class_codes,
+      mode: "decks",
       decks,
-      deck_numbers,
     });
   } catch (e: any) {
-    return res.status(500).json({ ok: false, error: sErr(e) || "Unexpected server error" });
+    console.error("flashcards/meta unexpected error", e);
+    return res.status(500).json({
+      ok: false,
+      error: e?.message ?? "Unexpected server error",
+    });
   }
 }

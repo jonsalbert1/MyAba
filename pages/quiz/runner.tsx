@@ -1,42 +1,56 @@
 // pages/quiz/runner.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
-import { useUser } from "@supabase/auth-helpers-react";
+import { useUser, useSupabaseClient } from "@supabase/auth-helpers-react";
 import { getDomainTitle, getSubdomainText } from "@/lib/tco";
-
-/* =========================
-   Types
-========================= */
 
 type QuizItem = {
   id: string;
   domain?: string | null;
-  subdomain: string; // e.g., "C06"
-  question: string;
-  a: string;
-  b: string;
-  c: string;
-  d: string;
-  correct_answer: string;
+  subdomain?: string | null;
+  question?: string | null;
+  a?: string | null;
+  b?: string | null;
+  c?: string | null;
+  d?: string | null;
+  correct_answer?: "A" | "B" | "C" | "D" | null;
   rationale_correct?: string | null;
-  // NEW: optional image path from Supabase
-  image_path?: string | null;
 };
 
-type ChoiceLetter = "A" | "B" | "C" | "D";
+type AttemptStatus = "in_progress" | "completed";
 
-type FetchState =
-  | { status: "idle" | "loading" }
-  | { status: "error"; message: string }
-  | { status: "loaded" };
+type QuizAttempt = {
+  id: string;
+  user_id: string;
+  domain: string;
+  subdomain_code: string;
+  question_ids: string[];
+  current_index: number;
+  total_questions: number;
+  correct_count: number;
+  incorrect_count: number;
+  status: AttemptStatus;
+  created_at: string;
+  updated_at: string;
+};
 
-/* =========================
-   Domain / subdomain counts
-========================= */
+function normalizeArrayIds(arr: any[] | null | undefined): string[] {
+  if (!arr) return [];
+  return arr.map((x) => String(x));
+}
 
-type DomainLetter = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I";
+// Normalize codes like "A1" -> "A01", "B9" -> "B09"
+function normalizeSubCode(raw: string): string {
+  if (!raw) return "";
+  const m = raw.match(/^([A-Ia-i])(\d{1,2})$/);
+  if (!m) return raw;
+  const letter = m[1].toUpperCase();
+  const num = m[2].padStart(2, "0");
+  return `${letter}${num}`;
+}
 
-const DOMAIN_COUNTS: Record<DomainLetter, number> = {
+// DOMAIN COUNTS — needed for "Next: A02" logic
+const DOMAIN_COUNTS: Record<string, number> = {
   A: 5,
   B: 24,
   C: 12,
@@ -48,556 +62,623 @@ const DOMAIN_COUNTS: Record<DomainLetter, number> = {
   I: 7,
 };
 
-const DEFAULT_LIMIT = 10;
+// Compute next subdomain code
+function getNextSubdomain(code: string): string | null {
+  if (!code) return null;
+  const domainLetter = code[0];
+  const num = parseInt(code.slice(1), 10);
+  if (isNaN(num)) return null;
 
-/* =========================
-   Helpers
-========================= */
-
-function parseCode(raw: string | string[] | undefined): {
-  domain: DomainLetter | null;
-  code: string | null;
-  index: number | null;
-} {
-  if (!raw) return { domain: null, code: null, index: null };
-  const s = Array.isArray(raw) ? raw[0] : raw;
-  if (!s || s.length < 2) return { domain: null, code: null, index: null };
-
-  const letter = s[0].toUpperCase() as DomainLetter;
-  const num = Number(s.slice(1));
-  if (!DOMAIN_COUNTS[letter] || !Number.isFinite(num) || num <= 0) {
-    return { domain: null, code: null, index: null };
-  }
-  return { domain: letter, code: `${letter}${num.toString().padStart(2, "0")}`, index: num };
-}
-
-function getNextSubdomainCode(
-  domain: DomainLetter,
-  index: number
-): string | null {
-  const max = DOMAIN_COUNTS[domain];
+  const max = DOMAIN_COUNTS[domainLetter];
   if (!max) return null;
-  if (index >= max) return null;
-  return `${domain}${(index + 1).toString().padStart(2, "0")}`;
+
+  const next = num + 1;
+  if (next > max) return null;
+
+  return `${domainLetter}${String(next).padStart(2, "0")}`;
 }
-
-// Local progress
-function setLocalProgress(
-  domain: DomainLetter,
-  code: string,
-  accuracyPercent: number
-) {
-  try {
-    const doneKey = `quiz:done:${domain}:${code}`;
-    const accKey = `quiz:accuracy:${domain}:${code}`;
-    const lastKey = `quiz:lastCode:${domain}`;
-
-    window.localStorage.setItem(doneKey, "1");
-
-    const prev = window.localStorage.getItem(accKey);
-    const prevNum = prev != null ? Number(prev) : null;
-    const best =
-      prevNum != null && Number.isFinite(prevNum)
-        ? Math.max(prevNum, accuracyPercent)
-        : accuracyPercent;
-    window.localStorage.setItem(accKey, String(best));
-
-    window.localStorage.setItem(lastKey, code);
-  } catch {
-    // ignore localStorage issues
-  }
-}
-
-// Save to server
-async function saveProgressToServer(
-  domain: DomainLetter,
-  code: string,
-  accuracyPercent: number,
-  answeredCount: number,
-  correctCount: number,
-  completed: boolean
-) {
-  try {
-    const res = await fetch("/api/quiz/progress", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        domain,
-        subdomain: code,
-        accuracy_percent: accuracyPercent,
-        answered_count: answeredCount,
-        correct_count: correctCount,
-        completed,
-      }),
-    });
-
-    if (!res.ok) {
-      const json = await res.json().catch(() => null);
-      console.warn("Quiz progress save failed", json || res.statusText);
-    }
-  } catch (err) {
-    console.warn("Quiz progress save error", err);
-  }
-}
-
-/**
- * Build a full image URL for quiz images.
- * Set NEXT_PUBLIC_QUIZ_IMAGE_BASE_URL in your env, e.g.:
- * https://YOUR-PROJECT.supabase.co/storage/v1/object/public/quiz-images
- */
-function buildImageUrl(imagePath?: string | null): string | null {
-  if (!imagePath) return null;
-  const base = process.env.NEXT_PUBLIC_QUIZ_IMAGE_BASE_URL;
-  if (!base) {
-    // Fallback: if you ever store full URLs directly in image_path
-    return imagePath;
-  }
-  const sep = base.endsWith("/") ? "" : "/";
-  return `${base}${sep}${imagePath}`;
-}
-
-/* =========================
-   Component
-========================= */
 
 export default function QuizRunnerPage() {
   const router = useRouter();
+  const supabase = useSupabaseClient();
   const user = useUser();
-  const { domain, code, index: subIndex } = useMemo(
-    () => parseCode(router.query.code),
-    [router.query.code]
-  );
 
-  const [fetchState, setFetchState] = useState<FetchState>({ status: "idle" });
+  const rawCode =
+    (router.query.code as string | undefined) ??
+    (router.query.subdomain as string | undefined) ??
+    "";
+
+  const normalizedCode = normalizeSubCode(rawCode);
+
+  const rawDomain = (router.query.domain as string | undefined) ?? "";
+  const domain = rawDomain || (normalizedCode ? normalizedCode[0] : "");
+  const subCode = normalizedCode;
+
+  const resumeFlag = router.query.resume === "1";
+  const freshFlag = router.query.fresh === "1";
+
+  const limit = useMemo(() => {
+    const raw = router.query.limit as string | undefined;
+    const n = raw ? parseInt(raw, 10) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : 10;
+  }, [router.query.limit]);
+
+  const [attempt, setAttempt] = useState<QuizAttempt | null>(null);
   const [items, setItems] = useState<QuizItem[]>([]);
+  const [index, setIndex] = useState(0);
 
-  const [currentIdx, setCurrentIdx] = useState(0);
-  const [answeredCount, setAnsweredCount] = useState(0);
-  const [correctCount, setCorrectCount] = useState(0);
+  const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
+  const [showFeedback, setShowFeedback] = useState(false);
 
-  const [selected, setSelected] = useState<ChoiceLetter | null>(null);
-  const [isAnswered, setIsAnswered] = useState(false);
-  const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const [showSummary, setShowSummary] = useState(false);
+  const currentItem = items[index] ?? null;
 
-  // Fetch questions
-  useEffect(() => {
-    if (!domain || !code) return;
-    if (user === undefined) return;
-    if (!user) return;
+  const domainTitle = domain ? getDomainTitle(domain) : "";
+  const subdomainText = subCode ? getSubdomainText(subCode) : "";
 
-    let cancelled = false;
+  // localStorage keys
+  const doneKey = `quiz:done:${domain}:${subCode}`;
+  const accKey = `quiz:accuracy:${domain}:${subCode}`;
+  const liveKey = `quiz:live:${domain}:${subCode}`;
 
-    async function load() {
-      setFetchState({ status: "loading" });
-      setItems([]);
-      setCurrentIdx(0);
-      setAnsweredCount(0);
-      setCorrectCount(0);
-      setSelected(null);
-      setIsAnswered(false);
-      setIsCorrect(null);
-      setShowSummary(false);
-
-      try {
-        const params = new URLSearchParams({
-          domain: domain || "",
-          code: code || "",
-          limit: String(DEFAULT_LIMIT),
-          shuffle: "1",
-        });
-
-        const res = await fetch(`/api/quiz/fetch?${params.toString()}`);
-        if (!res.ok) {
-          throw new Error(`Fetch failed with ${res.status}`);
-        }
-        const json = await res.json();
-        const list: QuizItem[] = Array.isArray(json?.items)
-          ? json.items
-          : json?.data ?? [];
-
-        if (!cancelled) {
-          setItems(list);
-          setFetchState({ status: "loaded" });
-        }
-      } catch (err: any) {
-        if (!cancelled) {
-          setFetchState({
-            status: "error",
-            message: err?.message || "Error loading questions.",
-          });
-        }
-      }
-    }
-
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [domain, code, user]);
-
-  const totalQuestions = items.length;
-  const current = items[currentIdx] ?? null;
-
-  const accuracyPercent =
-    answeredCount > 0 ? Math.round((correctCount / answeredCount) * 100) : 0;
-
-  const domainTitle =
-    (domain && getDomainTitle(domain)) ?? (domain ? `Domain ${domain}` : "");
-  const subTitle = code ? getSubdomainText(code) ?? code : "";
-
-  function handleAnswer(choice: ChoiceLetter) {
-    if (!current || isAnswered) return;
-
-    const correctChoice = (current.correct_answer || "").toUpperCase() as
-      | "A"
-      | "B"
-      | "C"
-      | "D";
-    const correct = choice === correctChoice;
-
-    setSelected(choice);
-    setIsAnswered(true);
-    setIsCorrect(correct);
-
-    const nextAnswered = answeredCount + 1;
-    const nextCorrect = correctCount + (correct ? 1 : 0);
-    const nextAccuracy =
-      nextAnswered > 0
-        ? Math.round((nextCorrect / nextAnswered) * 100)
-        : 0;
-
-    setAnsweredCount(nextAnswered);
-    setCorrectCount(nextCorrect);
-
-    if (domain && code) {
-      void saveProgressToServer(domain, code, nextAccuracy, nextAnswered, nextCorrect, false);
-    }
+  function setLocalLive(answeredCount: number, total: number) {
+    if (typeof window === "undefined") return;
+    try {
+      const payload = { answeredCount, total, lastUpdated: Date.now() };
+      window.localStorage.setItem(liveKey, JSON.stringify(payload));
+      window.localStorage.removeItem(doneKey);
+    } catch {}
   }
 
-  async function handleFinishSubdomain() {
-    if (!domain || !code || !user) return;
-    const letter = domain as DomainLetter;
+  function setLocalDone(correctCount: number, total: number) {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(doneKey, "1");
+      window.localStorage.removeItem(liveKey);
+      if (total > 0) {
+        const pct = Math.round((correctCount / total) * 100);
+        window.localStorage.setItem(accKey, String(pct));
+      }
+    } catch {}
+  }
 
-    setLocalProgress(letter, code, accuracyPercent);
+  // ============================
+  // LOAD or RESUME ATTEMPT
+  // ============================
+  useEffect(() => {
+    if (!router.isReady) return;
+    if (!user) {
+      setMsg("You must be logged in to run this quiz.");
+      setLoading(false);
+      return;
+    }
+    if (!subCode) {
+      setMsg("Missing subdomain code in URL.");
+      setLoading(false);
+      return;
+    }
 
-    await saveProgressToServer(
-      letter,
-      code,
-      accuracyPercent,
-      answeredCount,
-      correctCount,
-      true
+    const load = async () => {
+      setLoading(true);
+      setMsg("Loading quiz…");
+      try {
+        // Resume existing attempt?
+        if (!freshFlag) {
+          const { data: attempts } = await supabase
+            .from("quiz_attempts")
+            .select("*")
+            .eq("user_id", user.id)
+            .eq("domain", domain)
+            .eq("subdomain_code", subCode)
+            .eq("status", "in_progress")
+            .order("updated_at", { ascending: false })
+            .limit(1);
+
+          const existing = attempts?.[0];
+          if (existing && (resumeFlag || !freshFlag)) {
+            const attemptRow: QuizAttempt = {
+              ...existing,
+              question_ids: normalizeArrayIds(existing.question_ids),
+            };
+
+            const { data: questions, error: qErr } = await supabase
+              .from("quiz_questions")
+              .select("*")
+              .in("id", attemptRow.question_ids);
+
+            if (qErr) {
+              setMsg(qErr.message ?? "Error loading questions.");
+              setLoading(false);
+              return;
+            }
+
+            const map = new Map<string, QuizItem>();
+            (questions ?? []).forEach((q: any) =>
+              map.set(String(q.id), {
+                id: String(q.id),
+                domain: q.domain,
+                subdomain: q.subdomain,
+                question: q.question,
+                a: q.a,
+                b: q.b,
+                c: q.c,
+                d: q.d,
+                correct_answer: q.correct_answer,
+                rationale_correct: q.rationale_correct,
+              })
+            );
+
+            const ordered = attemptRow.question_ids
+              .map((id) => map.get(id))
+              .filter((x): x is QuizItem => !!x);
+
+            setAttempt(attemptRow);
+            setItems(ordered);
+            setIndex(
+              attemptRow.current_index >= 0 &&
+                attemptRow.current_index < ordered.length
+                ? attemptRow.current_index
+                : 0
+            );
+            setLocalLive(attemptRow.current_index, ordered.length);
+            setMsg(null);
+            setLoading(false);
+            return;
+          }
+        }
+
+        // Fresh quiz
+        const { data: questions, error: qErr } = await supabase
+          .from("quiz_questions")
+          .select("*")
+          .eq("domain", domain)
+          .eq("subdomain", subCode)
+          .eq("is_active", true)
+          .limit(limit);
+
+        if (qErr) {
+          setMsg(qErr.message ?? "Error loading questions.");
+          setLoading(false);
+          return;
+        }
+
+        if (!questions || questions.length === 0) {
+          setMsg("No questions found for this subdomain.");
+          setLoading(false);
+          return;
+        }
+
+        const quizItems: QuizItem[] = questions.map((q: any) => ({
+          id: String(q.id),
+          domain: q.domain,
+          subdomain: q.subdomain,
+          question: q.question,
+          a: q.a,
+          b: q.b,
+          c: q.c,
+          d: q.d,
+          correct_answer: q.correct_answer,
+          rationale_correct: q.rationale_correct,
+        }));
+
+        const questionIds = quizItems.map((q) => q.id);
+
+        const { data: inserted, error: insErr } = await supabase
+          .from("quiz_attempts")
+          .insert({
+            user_id: user.id,
+            domain,
+            subdomain_code: subCode,
+            question_ids: questionIds,
+            current_index: 0,
+            total_questions: quizItems.length,
+            correct_count: 0,
+            incorrect_count: 0,
+            status: "in_progress",
+          })
+          .select("*")
+          .single();
+
+        if (insErr) {
+          setMsg(insErr.message ?? "Error starting quiz.");
+          setLoading(false);
+          return;
+        }
+
+        const attemptRow: QuizAttempt = {
+          ...inserted,
+          question_ids: normalizeArrayIds(inserted.question_ids),
+        };
+
+        setAttempt(attemptRow);
+        setItems(quizItems);
+        setIndex(0);
+        setLocalLive(0, quizItems.length);
+        setMsg(null);
+        setLoading(false);
+      } catch (e: any) {
+        setMsg(e?.message ?? "Unexpected error");
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, [router.isReady, user, domain, subCode, resumeFlag, freshFlag, limit, supabase]);
+
+  // ============================
+  // HANDLE ANSWER
+  // ============================
+
+  const isCorrect = useMemo(() => {
+    if (!currentItem || !selectedAnswer) return null;
+    return selectedAnswer === currentItem.correct_answer;
+  }, [currentItem, selectedAnswer]);
+
+  // 🎯 optimistic grading + save
+  const handleSelect = (choice: string) => {
+    if (showFeedback || submitting) return;
+    setSelectedAnswer(choice);
+
+    if (!attempt || !currentItem) return;
+
+    // 1️⃣ Compute new scores locally
+    const correct = choice === currentItem.correct_answer;
+    const newCorrect = attempt.correct_count + (correct ? 1 : 0);
+    const newIncorrect = attempt.incorrect_count + (correct ? 0 : 1);
+
+    const nextIndex = index + 1;
+    const isLast = nextIndex >= items.length;
+    const newStatus: AttemptStatus = isLast ? "completed" : "in_progress";
+
+    const totalQ = items.length;
+    const nowIso = new Date().toISOString();
+
+    // 2️⃣ Update localStorage immediately
+    if (newStatus === "completed") {
+      setLocalDone(newCorrect, totalQ);
+    } else {
+      setLocalLive(index + 1, totalQ);
+    }
+
+    // 3️⃣ Update local attempt state immediately
+    setAttempt((prev) =>
+      prev
+        ? {
+            ...prev,
+            correct_count: newCorrect,
+            incorrect_count: newIncorrect,
+            current_index: isLast ? index : nextIndex,
+            status: newStatus,
+            updated_at: nowIso,
+          }
+        : prev
     );
 
-    setShowSummary(true);
-  }
+    // 4️⃣ Show feedback right away
+    setShowFeedback(true);
 
-  function handleNextQuestion() {
-    if (!isAnswered) return;
+    // 5️⃣ Save to Supabase in background
+    setSubmitting(true);
+    (async () => {
+      try {
+        // Update quiz_attempts row
+        const { error: updErr } = await supabase
+          .from("quiz_attempts")
+          .update({
+            correct_count: newCorrect,
+            incorrect_count: newIncorrect,
+            current_index: isLast ? index : nextIndex,
+            status: newStatus,
+            updated_at: nowIso,
+          })
+          .eq("id", attempt.id);
 
-    if (currentIdx + 1 < totalQuestions) {
-      setCurrentIdx((i) => i + 1);
-      setSelected(null);
-      setIsAnswered(false);
-      setIsCorrect(null);
+        if (updErr) {
+          console.warn("quiz_attempts update error:", updErr);
+        }
+
+        // If quiz is finished, upsert into quiz_subdomain_progress
+        if (newStatus === "completed" && user && totalQ > 0) {
+          const pct = Math.round((newCorrect / totalQ) * 100);
+
+          // See if we already have a row for this user+domain+subdomain
+          const { data: existing, error: selErr } = await supabase
+            .from("quiz_subdomain_progress")
+            .select("best_accuracy_percent")
+            .eq("user_id", user.id)
+            .eq("domain", domain)
+            .eq("subdomain", subCode)
+            .maybeSingle();
+
+          if (selErr) {
+            console.warn(
+              "quiz_subdomain_progress select error:",
+              selErr
+            );
+          } else if (!existing) {
+            // No previous record → insert
+            const { error: insErr2 } = await supabase
+              .from("quiz_subdomain_progress")
+              .insert({
+                user_id: user.id,
+                domain,
+                subdomain: subCode,
+                best_accuracy_percent: pct,
+              });
+
+            if (insErr2) {
+              console.warn(
+                "quiz_subdomain_progress insert error:",
+                insErr2
+              );
+            }
+          } else if (
+            existing.best_accuracy_percent == null ||
+            pct > existing.best_accuracy_percent
+          ) {
+            // Better score → update
+            const { error: upd2Err } = await supabase
+              .from("quiz_subdomain_progress")
+              .update({ best_accuracy_percent: pct })
+              .eq("user_id", user.id)
+              .eq("domain", domain)
+              .eq("subdomain", subCode);
+
+            if (upd2Err) {
+              console.warn(
+                "quiz_subdomain_progress update error:",
+                upd2Err
+              );
+            }
+          }
+        }
+      } finally {
+        setSubmitting(false);
+      }
+    })();
+  };
+
+  const handleNext = () => {
+    if (!items.length) return;
+
+    const nextIndex = index + 1;
+    if (nextIndex < items.length) {
+      setIndex(nextIndex);
+      setSelectedAnswer(null);
+      setShowFeedback(false);
     } else {
-      void handleFinishSubdomain();
+      setShowFeedback(false);
     }
-  }
+  };
 
-  function handleBackToToc() {
-    router.push("/quiz");
-  }
+  // ============================
+  // UI HELPERS
+  // ============================
 
-  function handleNextSubdomain() {
-    if (!domain || subIndex == null) {
-      router.push("/quiz");
-      return;
-    }
-    const nextCode = getNextSubdomainCode(domain, subIndex);
-    if (!nextCode) {
-      router.push("/quiz");
-      return;
-    }
-    router.push({
-      pathname: "/quiz/runner",
-      query: { code: nextCode },
-    });
-  }
+  const progressLabel = useMemo(() => {
+    if (!items.length) return "0 / 0";
+    return `${index + 1} / ${items.length}`;
+  }, [index, items.length]);
 
-  function renderRationales() {
-    if (!current || !isAnswered || !selected) return null;
-    const generic = current.rationale_correct;
+  const renderChoices = () => {
+    if (!currentItem) return null;
+
+    const options = [
+      { key: "A", label: currentItem.a },
+      { key: "B", label: currentItem.b },
+      { key: "C", label: currentItem.c },
+      { key: "D", label: currentItem.d },
+    ].filter((opt) => opt.label);
 
     return (
-      <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-blue-900">
-        <p className="mb-1 font-semibold">
-          You chose option {selected}.{" "}
-          {isCorrect ? "That is correct. 🎉" : "That is not correct."}
-        </p>
-        {generic && (
-          <p className="mb-1 whitespace-pre-line">
-            {generic}
-          </p>
+      <div className="space-y-2 mt-4">
+        {options.map((opt) => {
+          const isSelected = selectedAnswer === opt.key;
+          let highlightClasses = "";
+
+          if (showFeedback) {
+            const isCorrectAnswer = currentItem.correct_answer === opt.key;
+            if (isCorrectAnswer)
+              highlightClasses = "border-green-500 bg-green-50";
+            else if (isSelected)
+              highlightClasses = "border-red-500 bg-red-50";
+          } else if (isSelected) {
+            highlightClasses = "border-blue-500 bg-blue-50";
+          }
+
+          return (
+            <button
+              key={opt.key}
+              onClick={() => handleSelect(opt.key)}
+              disabled={showFeedback || submitting}
+              className={`w-full rounded-md border px-3 py-2 text-left text-sm ${
+                highlightClasses || "border-zinc-300 bg-white"
+              } disabled:cursor-default`}
+            >
+              <span className="font-semibold mr-2">{opt.key}.</span>
+              <span>{opt.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderFeedback = () => {
+    if (!showFeedback || !currentItem || isCorrect === null) return null;
+
+    const correctLetter = currentItem.correct_answer;
+    const correctText =
+      correctLetter === "A"
+        ? currentItem.a
+        : correctLetter === "B"
+        ? currentItem.b
+        : correctLetter === "C"
+        ? currentItem.c
+        : correctLetter === "D"
+        ? currentItem.d
+        : null;
+
+    return (
+      <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm">
+        <div className={isCorrect ? "text-green-700" : "text-red-700"}>
+          {isCorrect ? "Correct! 🎉" : "Incorrect."}
+        </div>
+
+        {correctLetter && (
+          <div className="mt-1 text-zinc-800">
+            Correct answer:{" "}
+            <span className="font-semibold">
+              {correctLetter}
+              {correctText ? ` — ${correctText}` : ""}
+            </span>
+          </div>
+        )}
+
+        {currentItem.rationale_correct && (
+          <div className="mt-2 text-xs text-zinc-700 whitespace-pre-line">
+            <span className="font-semibold">Rationale: </span>
+            {currentItem.rationale_correct}
+          </div>
         )}
       </div>
     );
-  }
+  };
 
-  if (!domain || !code) {
-    return (
-      <main className="mx-auto max-w-3xl px-4 py-8">
-        <h1 className="mb-2 text-2xl font-semibold">Quiz</h1>
-        <p className="text-sm text-gray-600">
-          No subdomain code was provided. Please go back to the quiz table of
-          contents and choose a subdomain.
-        </p>
-        <button
-          onClick={handleBackToToc}
-          className="mt-4 rounded-md border px-4 py-2 text-sm"
-        >
-          Back to TOC
-        </button>
-      </main>
-    );
-  }
-
-  if (user === undefined) {
-    return (
-      <main className="mx-auto max-w-3xl px-4 py-8">
-        <p className="text-sm text-gray-600">Checking your session…</p>
-      </main>
-    );
-  }
+  // ============================
+  // MAIN RENDER
+  // ============================
 
   if (!user) {
     return (
-      <main className="mx-auto max-w-3xl px-4 py-8">
-        <h1 className="mb-2 text-2xl font-semibold">Quiz</h1>
-        <p className="mb-3 text-sm text-gray-700">
-          You must be signed in to take quizzes and track your progress.
-        </p>
-        <div className="flex gap-2">
-          <button
-            onClick={() => router.push("/login")}
-            className="rounded-md border bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
-          >
-            Sign in
-          </button>
-          <button
-            onClick={handleBackToToc}
-            className="rounded-md border px-4 py-2 text-sm"
-          >
-            Back to Quiz home
-          </button>
-        </div>
+      <main className="mx-auto max-w-3xl p-6">
+        <h1 className="text-xl font-semibold mb-2">Quiz</h1>
+        <p className="text-sm text-zinc-600">Please sign in to run quizzes.</p>
       </main>
     );
   }
-
-  if (fetchState.status === "loading" || fetchState.status === "idle") {
-    return (
-      <main className="mx-auto max-w-3xl px-4 py-8">
-        <p className="text-sm text-gray-600">Loading questions…</p>
-      </main>
-    );
-  }
-
-  if (fetchState.status === "error") {
-    return (
-      <main className="mx-auto max-w-3xl px-4 py-8">
-        <h1 className="mb-2 text-2xl font-semibold">Quiz</h1>
-        <p className="mb-3 text-sm text-red-600">
-          {fetchState.message || "Error loading questions."}
-        </p>
-        <button
-          onClick={handleBackToToc}
-          className="mt-2 rounded-md border px-4 py-2 text-sm"
-        >
-          Back to TOC
-        </button>
-      </main>
-    );
-  }
-
-  if (!current || totalQuestions === 0) {
-    return (
-      <main className="mx-auto max-w-3xl px-4 py-8">
-        <h1 className="mb-2 text-2xl font-semibold">Quiz</h1>
-        <p className="text-sm text-gray-600">
-          No questions were found for {code}. Please choose another subdomain.
-        </p>
-        <button
-          onClick={handleBackToToc}
-          className="mt-4 rounded-md border px-4 py-2 text-sm"
-        >
-          Back to TOC
-        </button>
-      </main>
-    );
-  }
-
-  const questionNumber = currentIdx + 1;
-  const imageUrl = buildImageUrl(current.image_path);
 
   return (
-    <main className="relative mx-auto max-w-3xl px-4 py-8">
-      {showSummary && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-lg">
-            <h2 className="mb-1 text-xl font-semibold">
-              Subdomain complete – {code}
-            </h2>
-            <p className="mb-3 text-sm text-gray-600">
-              Great work! Here’s how you did this round.
-            </p>
-            <div className="mb-4 rounded-lg border bg-gray-50 p-3 text-sm">
-              <p>
-                Correct:{" "}
-                <span className="font-semibold">
-                  {correctCount} / {answeredCount}
-                </span>
-              </p>
-              <p>
-                Accuracy:{" "}
-                <span className="font-semibold">{accuracyPercent}%</span>
-              </p>
-            </div>
-            <div className="flex flex-wrap justify-end gap-2">
-              <button
-                onClick={handleBackToToc}
-                className="rounded-md border px-3 py-1.5 text-sm"
-              >
-                Back to TOC
-              </button>
-              <button
-                onClick={handleNextSubdomain}
-                className="rounded-md border bgBlack px-3 py-1.5 text-sm font-semibold text-white bg-black"
-              >
-                Next subdomain
-              </button>
-            </div>
+    <main className="mx-auto max-w-3xl p-6">
+      <header className="mb-4 flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">
+            Quiz – {domainTitle || domain} {subCode && `• ${subCode}`}
+          </h1>
+
+          {subdomainText && (
+            <p className="text-xs text-zinc-500 mt-1">{subdomainText}</p>
+          )}
+
+          <div className="mt-1 text-xs text-zinc-500">
+            Question {progressLabel}{" "}
+            {attempt && (
+              <>
+                • Correct: {attempt.correct_count} • Incorrect:{" "}
+                {attempt.incorrect_count} • Status: {attempt.status}
+              </>
+            )}
           </div>
         </div>
-      )}
 
-      <header className="mb-6">
+        {/* Back to TOC */}
         <button
-          onClick={handleBackToToc}
-          className="mb-2 text-sm text-blue-700 underline-offset-2 hover:underline"
+          type="button"
+          onClick={() => router.push("/quiz")}
+          className="rounded-md border border-zinc-200 px-3 py-1.5 text-xs hover:bg-zinc-50"
         >
           ← Back to TOC
         </button>
-
-        <h1 className="mb-1 text-3xl font-semibold">Quiz</h1>
-        <p className="text-sm text-gray-700">
-          <span className="font-semibold uppercase tracking-wide">
-            DOMAIN {domain}
-          </span>{" "}
-          {domainTitle && <>· {domainTitle}</>} ·{" "}
-          <span className="font-semibold">Subdomain {code}</span>
-        </p>
-        {subTitle && (
-          <p className="mt-1 text-sm text-gray-600">{subTitle}</p>
-        )}
       </header>
 
-      <section className="mb-5 rounded-lg border p-3 text-sm">
-        <div className="flex items-center justify-between">
-          <div>
-            <span className="font-medium">Progress</span>{" "}
-            <span className="text-gray-600">
-              · Answered {answeredCount} / {totalQuestions} · Question{" "}
-              {questionNumber} of {totalQuestions}
-            </span>
+      {loading && (
+        <p className="text-sm text-zinc-600">{msg || "Loading quiz…"}</p>
+      )}
+
+      {!loading && msg && (
+        <p className="text-sm text-red-600">{msg}</p>
+      )}
+
+      {!loading && !msg && !currentItem && (
+        <p className="text-sm text-zinc-600">No question loaded.</p>
+      )}
+
+      {!loading && currentItem && (
+        <section>
+          <div className="rounded-md border border-zinc-200 bg-white p-4 shadow-sm">
+            <p className="text-sm font-medium text-zinc-900">
+              {currentItem.question}
+            </p>
+
+            {renderChoices()}
           </div>
-          <div className="text-xs text-gray-500">
-            Correct so far: {accuracyPercent}%
+
+          {/* === BUTTONS (updated) === */}
+          <div className="mt-4 flex flex-wrap gap-2 items-center">
+            {items.length > 0 && (
+              <>
+                {index + 1 < items.length ? (
+                  // Not last question: show "Next question"
+                  <button
+                    onClick={handleNext}
+                    disabled={!showFeedback}
+                    className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                  >
+                    Next question
+                  </button>
+                ) : (
+                  // Last question: only show Finish / Next / TOC
+                  // AFTER the user has answered (feedback is visible)
+                  showFeedback && (
+                    <>
+                      {/* Finish → Domain TOC */}
+                      <button
+                        onClick={() => router.push(`/quiz/${domain}`)}
+                        className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white"
+                      >
+                        Finish
+                      </button>
+
+                      {/* Next Subdomain */}
+                      {getNextSubdomain(subCode) && (
+                        <button
+                          onClick={() =>
+                            router.push(
+                              `/quiz/runner?code=${getNextSubdomain(
+                                subCode
+                              )!}`
+                            )
+                          }
+                          className="rounded-md border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50"
+                        >
+                          Next: {getNextSubdomain(subCode)}
+                        </button>
+                      )}
+
+                      {/* Full TOC */}
+                      <button
+                        onClick={() => router.push("/quiz")}
+                        className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50"
+                      >
+                        Full TOC
+                      </button>
+                    </>
+                  )
+                )}
+              </>
+            )}
+
+            {submitting && (
+              <span className="text-xs text-zinc-500">Saving…</span>
+            )}
           </div>
-        </div>
-        <div className="mt-2 h-2 w-full overflow-hidden rounded bg-gray-200">
-          <div
-            className="h-2 rounded bg-blue-500 transition-all"
-            style={{
-              width: `${
-                totalQuestions ? (answeredCount / totalQuestions) * 100 : 0
-              }%`,
-            }}
-          />
-        </div>
-      </section>
 
-      <section className="rounded-lg border bg-white p-4 shadow-sm">
-        {/* Optional image */}
-        {imageUrl && (
-          <div className="mb-4 flex justify-center">
-            <img
-              src={imageUrl}
-              alt="Quiz question illustration"
-              className="max-h-64 w-full max-w-xl rounded-md border object-contain"
-            />
-          </div>
-        )}
-
-        <p className="mb-4 whitespace-pre-line text-base font-medium text-gray-900">
-          {current.question}
-        </p>
-
-        <div className="space-y-2">
-          {(["A", "B", "C", "D"] as ChoiceLetter[]).map((letter) => {
-            const key = letter.toLowerCase() as "a" | "b" | "c" | "d";
-            const text = (current as any)[key] as string;
-            const isSelected = selected === letter;
-            const isCorrectChoice =
-              (current.correct_answer || "").toUpperCase() === letter;
-
-            let borderClass = "border-gray-300";
-            let bgClass = "bg-white";
-            if (isAnswered && isSelected) {
-              borderClass = isCorrect ? "border-green-500" : "border-red-500";
-              bgClass = isCorrect ? "bg-green-50" : "bg-red-50";
-            } else if (isAnswered && isCorrectChoice) {
-              borderClass = "border-green-400";
-            }
-
-            return (
-              <button
-                key={letter}
-                type="button"
-                onClick={() => handleAnswer(letter)}
-                disabled={isAnswered}
-                className={`flex w-full items-start gap-2 rounded-md border px-3 py-2 text-left text-sm transition ${
-                  isAnswered ? "cursor-default" : "hover:bg-gray-50"
-                } ${borderClass} ${bgClass}`}
-              >
-                <span className="mt-0.5 inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border text-xs font-semibold">
-                  {letter}
-                </span>
-                <span className="whitespace-pre-line">{text}</span>
-              </button>
-            );
-          })}
-        </div>
-
-        {renderRationales()}
-
-        <div className="mt-4 flex justify-end">
-          <button
-            type="button"
-            onClick={handleNextQuestion}
-            disabled={!isAnswered}
-            className="rounded-md border bg-black px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {currentIdx + 1 < totalQuestions
-              ? "Next question"
-              : "Finish subdomain"}
-          </button>
-        </div>
-      </section>
+          {renderFeedback()}
+        </section>
+      )}
     </main>
   );
 }

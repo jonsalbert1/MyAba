@@ -93,6 +93,8 @@ export default function App({
     { href: "/quiz", label: "Quiz" }, // TOC / main quiz hub
   ];
 
+  const year = new Date().getFullYear();
+
   return (
     <SessionContextProvider
       supabaseClient={supabaseClient}
@@ -175,6 +177,19 @@ export default function App({
       <div className="mx-auto max-w-6xl px-4 py-4">
         <Component {...pageProps} />
       </div>
+
+      {/* Global footer */}
+      <footer className="mt-8">
+        <hr className="border-t border-black" />
+        <div className="mx-auto max-w-6xl px-4 py-4 text-center">
+          <Link
+            href="https://myaba.app"
+            className="text-lg font-semibold text-black hover:underline"
+          >
+            © {year} myABA.app
+          </Link>
+        </div>
+      </footer>
     </SessionContextProvider>
   );
 }

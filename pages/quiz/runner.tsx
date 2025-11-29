@@ -117,8 +117,7 @@ export default function QuizRunnerPage() {
   const currentItem = items[index] ?? null;
 
   const domainTitle = domain ? getDomainTitle(domain) : "";
-  const subdomainText =
-    domain && subCode ? getSubdomainText(domain, subCode) : "";
+  const subdomainText = subCode ? getSubdomainText(subCode) : "";
 
   // localStorage keys
   const doneKey = `quiz:done:${domain}:${subCode}`;
@@ -318,58 +317,128 @@ export default function QuizRunnerPage() {
     return selectedAnswer === currentItem.correct_answer;
   }, [currentItem, selectedAnswer]);
 
-  const handleSelect = async (choice: string) => {
+  // 🎯 optimistic grading + save
+  const handleSelect = (choice: string) => {
     if (showFeedback || submitting) return;
     setSelectedAnswer(choice);
 
     if (!attempt || !currentItem) return;
 
-    setSubmitting(true);
-    try {
-      const correct = choice === currentItem.correct_answer;
-      const newCorrect = attempt.correct_count + (correct ? 1 : 0);
-      const newIncorrect = attempt.incorrect_count + (correct ? 0 : 1);
+    // 1️⃣ Compute new scores locally
+    const correct = choice === currentItem.correct_answer;
+    const newCorrect = attempt.correct_count + (correct ? 1 : 0);
+    const newIncorrect = attempt.incorrect_count + (correct ? 0 : 1);
 
-      const nextIndex = index + 1;
-      const isLast = nextIndex >= items.length;
-      const newStatus: AttemptStatus = isLast ? "completed" : "in_progress";
+    const nextIndex = index + 1;
+    const isLast = nextIndex >= items.length;
+    const newStatus: AttemptStatus = isLast ? "completed" : "in_progress";
 
-      await supabase
-        .from("quiz_attempts")
-        .update({
-          correct_count: newCorrect,
-          incorrect_count: newIncorrect,
-          current_index: isLast ? index : nextIndex,
-          status: newStatus,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", attempt.id);
+    const totalQ = items.length;
+    const nowIso = new Date().toISOString();
 
-      const totalQ = items.length;
-
-      if (newStatus === "completed") {
-        setLocalDone(newCorrect, totalQ);
-      } else {
-        setLocalLive(index + 1, totalQ);
-      }
-
-      setAttempt((prev) =>
-        prev
-          ? {
-              ...prev,
-              correct_count: newCorrect,
-              incorrect_count: newIncorrect,
-              current_index: isLast ? index : nextIndex,
-              status: newStatus,
-              updated_at: new Date().toISOString(),
-            }
-          : prev
-      );
-
-      setShowFeedback(true);
-    } finally {
-      setSubmitting(false);
+    // 2️⃣ Update localStorage immediately
+    if (newStatus === "completed") {
+      setLocalDone(newCorrect, totalQ);
+    } else {
+      setLocalLive(index + 1, totalQ);
     }
+
+    // 3️⃣ Update local attempt state immediately
+    setAttempt((prev) =>
+      prev
+        ? {
+            ...prev,
+            correct_count: newCorrect,
+            incorrect_count: newIncorrect,
+            current_index: isLast ? index : nextIndex,
+            status: newStatus,
+            updated_at: nowIso,
+          }
+        : prev
+    );
+
+    // 4️⃣ Show feedback right away
+    setShowFeedback(true);
+
+    // 5️⃣ Save to Supabase in background
+    setSubmitting(true);
+    (async () => {
+      try {
+        // Update quiz_attempts row
+        const { error: updErr } = await supabase
+          .from("quiz_attempts")
+          .update({
+            correct_count: newCorrect,
+            incorrect_count: newIncorrect,
+            current_index: isLast ? index : nextIndex,
+            status: newStatus,
+            updated_at: nowIso,
+          })
+          .eq("id", attempt.id);
+
+        if (updErr) {
+          console.warn("quiz_attempts update error:", updErr);
+        }
+
+        // If quiz is finished, upsert into quiz_subdomain_progress
+        if (newStatus === "completed" && user && totalQ > 0) {
+          const pct = Math.round((newCorrect / totalQ) * 100);
+
+          // See if we already have a row for this user+domain+subdomain
+          const { data: existing, error: selErr } = await supabase
+            .from("quiz_subdomain_progress")
+            .select("best_accuracy_percent")
+            .eq("user_id", user.id)
+            .eq("domain", domain)
+            .eq("subdomain", subCode)
+            .maybeSingle();
+
+          if (selErr) {
+            console.warn(
+              "quiz_subdomain_progress select error:",
+              selErr
+            );
+          } else if (!existing) {
+            // No previous record → insert
+            const { error: insErr2 } = await supabase
+              .from("quiz_subdomain_progress")
+              .insert({
+                user_id: user.id,
+                domain,
+                subdomain: subCode,
+                best_accuracy_percent: pct,
+              });
+
+            if (insErr2) {
+              console.warn(
+                "quiz_subdomain_progress insert error:",
+                insErr2
+              );
+            }
+          } else if (
+            existing.best_accuracy_percent == null ||
+            pct > existing.best_accuracy_percent
+          ) {
+            // Better score → update
+            const { error: upd2Err } = await supabase
+              .from("quiz_subdomain_progress")
+              .update({ best_accuracy_percent: pct })
+              .eq("user_id", user.id)
+              .eq("domain", domain)
+              .eq("subdomain", subCode);
+
+            if (upd2Err) {
+              console.warn(
+                "quiz_subdomain_progress update error:",
+                upd2Err
+              );
+            }
+          }
+        }
+      } finally {
+        setSubmitting(false);
+      }
+    })();
   };
 
   const handleNext = () => {
@@ -412,8 +481,10 @@ export default function QuizRunnerPage() {
 
           if (showFeedback) {
             const isCorrectAnswer = currentItem.correct_answer === opt.key;
-            if (isCorrectAnswer) highlightClasses = "border-green-500 bg-green-50";
-            else if (isSelected) highlightClasses = "border-red-500 bg-red-50";
+            if (isCorrectAnswer)
+              highlightClasses = "border-green-500 bg-green-50";
+            else if (isSelected)
+              highlightClasses = "border-red-500 bg-red-50";
           } else if (isSelected) {
             highlightClasses = "border-blue-500 bg-blue-50";
           }
@@ -547,49 +618,56 @@ export default function QuizRunnerPage() {
 
           {/* === BUTTONS (updated) === */}
           <div className="mt-4 flex flex-wrap gap-2 items-center">
-
-            {/* If NOT last question: Next question */}
-            {index + 1 < items.length ? (
-              <button
-                onClick={handleNext}
-                disabled={!showFeedback}
-                className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-              >
-                Next question
-              </button>
-            ) : (
+            {items.length > 0 && (
               <>
-                {/* === FINAL QUESTION SCREEN === */}
-
-                {/* Finish → Domain TOC */}
-                <button
-                  onClick={() => router.push(`/quiz/${domain}`)}
-                  className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white"
-                >
-                  Finish
-                </button>
-
-                {/* Next Subdomain */}
-                {getNextSubdomain(subCode) && (
+                {index + 1 < items.length ? (
+                  // Not last question: show "Next question"
                   <button
-                    onClick={() =>
-                      router.push(
-                        `/quiz/runner?code=${getNextSubdomain(subCode)!}`
-                      )
-                    }
-                    className="rounded-md border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50"
+                    onClick={handleNext}
+                    disabled={!showFeedback}
+                    className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
                   >
-                    Next: {getNextSubdomain(subCode)}
+                    Next question
                   </button>
-                )}
+                ) : (
+                  // Last question: only show Finish / Next / TOC
+                  // AFTER the user has answered (feedback is visible)
+                  showFeedback && (
+                    <>
+                      {/* Finish → Domain TOC */}
+                      <button
+                        onClick={() => router.push(`/quiz/${domain}`)}
+                        className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white"
+                      >
+                        Finish
+                      </button>
 
-                {/* Full TOC */}
-                <button
-                  onClick={() => router.push("/quiz")}
-                  className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50"
-                >
-                  Full TOC
-                </button>
+                      {/* Next Subdomain */}
+                      {getNextSubdomain(subCode) && (
+                        <button
+                          onClick={() =>
+                            router.push(
+                              `/quiz/runner?code=${getNextSubdomain(
+                                subCode
+                              )!}`
+                            )
+                          }
+                          className="rounded-md border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50"
+                        >
+                          Next: {getNextSubdomain(subCode)}
+                        </button>
+                      )}
+
+                      {/* Full TOC */}
+                      <button
+                        onClick={() => router.push("/quiz")}
+                        className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50"
+                      >
+                        Full TOC
+                      </button>
+                    </>
+                  )
+                )}
               </>
             )}
 

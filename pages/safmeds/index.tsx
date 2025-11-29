@@ -9,20 +9,75 @@ type Summary = {
   incorrect: number;
 };
 
-type SafmedsRun = {
-  correct: number | null;
-  incorrect: number | null;
-  created_at: string;
+type WeekSummary = Summary;
+
+type Profile = {
+  first_name: string | null;
+  last_name: string | null;
 };
+
+// Same helper we used in trials.tsx
+function getTodayLocalYMD(): string {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
 
 export default function SafmedsHome() {
   const user = useUser();
   const supabase = useSupabaseClient();
 
+  const [profile, setProfile] = useState<Profile | null>(null);
   const [today, setToday] = useState<Summary | null>(null);
-  const [week, setWeek] = useState<Summary | null>(null);
+  const [week, setWeek] = useState<WeekSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Load profile (same as Home)
+  useEffect(() => {
+    const loadProfile = async () => {
+      if (!user) {
+        setProfile(null);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("first_name, last_name")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (error) {
+        console.error("SAFMEDS profile load error", error);
+      }
+
+      setProfile((data as Profile) ?? null);
+    };
+
+    loadProfile();
+  }, [user, supabase]);
+
+  const fullName =
+    (profile?.first_name?.trim() || "") +
+    (profile?.last_name ? ` ${profile.last_name.trim()}` : "");
+
+  const fallbackName = (() => {
+    if (!user?.email) return "there";
+    const local = user.email.split("@")[0] || "";
+    const cleaned = local.replace(/[._-]+/g, " ");
+    const parts = cleaned
+      .split(" ")
+      .filter(Boolean)
+      .map(
+        (p: string) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()
+      );
+    return parts.length > 0 ? parts.join(" ") : "there";
+  })();
+
+  const displayName =
+    fullName.trim().length > 0 ? fullName.trim() : fallbackName;
 
   useEffect(() => {
     if (!user) return;
@@ -32,95 +87,50 @@ export default function SafmedsHome() {
         setLoading(true);
         setError(null);
 
-        // Pull a chunk of recent runs for THIS user
-        const { data, error } = await supabase
-          .from("safmeds_runs")
-          .select("correct, incorrect, created_at")
-          .eq("user_id", user.id)
-          .order("created_at", { ascending: false })
-          .limit(500);
+        const uid = encodeURIComponent(user.id);
+        const todayStr = getTodayLocalYMD();
 
-        if (error) {
-          console.error("SAFMEDS home supabase error:", error);
-          setError(error.message);
-          setToday(null);
-          setWeek(null);
-          return;
+        const [todayRes, weekRes] = await Promise.all([
+          fetch(
+            `/api/safmeds/today-count?user_id=${uid}&local_day=${todayStr}`
+          ),
+          fetch(`/api/safmeds/week?user_id=${uid}`),
+        ]);
+
+        const todayJson = await todayRes.json();
+        const weekJson = await weekRes.json();
+
+        if (!todayJson.ok) {
+          setError(todayJson.error ?? "Error loading today stats");
+        } else {
+          setToday(todayJson.today);
         }
 
-        const rows = (data ?? []) as SafmedsRun[];
-
-        if (!rows.length) {
-          setToday(null);
-          setWeek(null);
-          return;
+        if (!weekJson.ok) {
+          setError(
+            (prev) => prev ?? weekJson.error ?? "Error loading week stats"
+          );
+        } else {
+          setWeek(weekJson.week);
         }
-
-        const now = new Date();
-
-        // "today" window in local time
-        const startOfToday = new Date(
-          now.getFullYear(),
-          now.getMonth(),
-          now.getDate()
-        );
-        const endOfToday = new Date(
-          startOfToday.getTime() + 24 * 60 * 60 * 1000
-        );
-
-        // last 7 days window
-        const sevenDaysAgo = new Date(
-          now.getTime() - 7 * 24 * 60 * 60 * 1000
-        );
-
-        const todaySummary: Summary = { runs: 0, correct: 0, incorrect: 0 };
-        const weekSummary: Summary = { runs: 0, correct: 0, incorrect: 0 };
-
-        for (const row of rows) {
-          const created = new Date(row.created_at);
-          const c = row.correct ?? 0;
-          const ic = row.incorrect ?? 0;
-
-          // Last 7 days
-          if (created >= sevenDaysAgo && created <= now) {
-            weekSummary.runs += 1;
-            weekSummary.correct += c;
-            weekSummary.incorrect += ic;
-          }
-
-          // Today
-          if (created >= startOfToday && created < endOfToday) {
-            todaySummary.runs += 1;
-            todaySummary.correct += c;
-            todaySummary.incorrect += ic;
-          }
-        }
-
-        setToday(todaySummary.runs > 0 ? todaySummary : null);
-        setWeek(weekSummary.runs > 0 ? weekSummary : null);
       } catch (e: any) {
         console.error("Error loading SAFMEDS summary:", e);
         setError(e?.message ?? "Unknown error loading summary");
-        setToday(null);
-        setWeek(null);
       } finally {
         setLoading(false);
       }
     };
 
     load();
-  }, [user, supabase]);
-
-  const displayName =
-    (user?.user_metadata as any)?.full_name ||
-    user?.email?.split("@")[0] ||
-    "there";
+  }, [user]);
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8 space-y-6">
       <header className="space-y-2">
-        <h1 className="text-2xl font-bold">SAFMEDS Dashboard</h1>
-        <p className="text-slate-600">
+        <h1 className="text-3xl md:text-5xl font-semibold tracking-tight text-blue-900">
+          SAFMEDS Dashboard
+        </h1>
+        <p className="text-lg text-slate-700">
           Welcome, <span className="font-semibold">{displayName}</span> 👋
         </p>
       </header>
@@ -128,19 +138,19 @@ export default function SafmedsHome() {
       <nav className="flex flex-wrap gap-3">
         <Link
           href="/safmeds/trials"
-          className="rounded-lg border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50"
+          className="rounded-xl border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50 shadow-sm"
         >
           ➤ Start New Timings
         </Link>
         <Link
           href="/safmeds/week"
-          className="rounded-lg border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50"
+          className="rounded-xl border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50 shadow-sm"
         >
           📈 Show All Runs (Last 7 Days)
         </Link>
         <Link
           href="/safmeds/downloads"
-          className="rounded-lg border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50"
+          className="rounded-xl border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50 shadow-sm"
         >
           ⬇ Downloads & Reports
         </Link>
@@ -153,23 +163,31 @@ export default function SafmedsHome() {
       )}
 
       <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <h2 className="text-sm font-semibold text-slate-700 mb-2">
+        {/* Today's performance */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <h2 className="text-lg font-semibold text-slate-800 mb-2">
             Today&apos;s Performance
           </h2>
           {loading && <p className="text-sm text-slate-500">Loading…</p>}
           {!loading && today && (
             <div className="space-y-1 text-sm">
               <p>
-                Runs: <span className="font-semibold">{today.runs}</span>
+                Runs:{" "}
+                <span className="font-semibold">
+                  {today.runs}
+                </span>
               </p>
               <p>
                 Correct:{" "}
-                <span className="font-semibold">{today.correct}</span>
+                <span className="font-semibold">
+                  {today.correct}
+                </span>
               </p>
               <p>
                 Incorrect:{" "}
-                <span className="font-semibold">{today.incorrect}</span>
+                <span className="font-semibold">
+                  {today.incorrect}
+                </span>
               </p>
             </div>
           )}
@@ -180,29 +198,37 @@ export default function SafmedsHome() {
           )}
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <h2 className="text-sm font-semibold text-slate-700 mb-2">
+        {/* Last 7 days */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <h2 className="text-lg font-semibold text-slate-800 mb-2">
             Last 7 Days
           </h2>
           {loading && <p className="text-sm text-slate-500">Loading…</p>}
           {!loading && week && (
             <div className="space-y-1 text-sm">
               <p>
-                Runs: <span className="font-semibold">{week.runs}</span>
+                Runs:{" "}
+                <span className="font-semibold">
+                  {week.runs}
+                </span>
               </p>
               <p>
                 Correct:{" "}
-                <span className="font-semibold">{week.correct}</span>
+                <span className="font-semibold">
+                  {week.correct}
+                </span>
               </p>
               <p>
                 Incorrect:{" "}
-                <span className="font-semibold">{week.incorrect}</span>
+                <span className="font-semibold">
+                  {week.incorrect}
+                </span>
               </p>
             </div>
           )}
           {!loading && !week && (
             <p className="text-sm text-slate-500">
-              No SAFMEDS runs in the last 7 days.
+              No data yet for the last 7 days.
             </p>
           )}
         </div>

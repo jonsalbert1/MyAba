@@ -1,3 +1,4 @@
+// pages/api/feedback.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { Resend } from "resend";
@@ -57,14 +58,23 @@ export default async function handler(
       });
     }
 
+    // 🔍 Debug what env vars the deployed function actually sees
+    console.log("FEEDBACK EMAIL ENV CHECK", {
+      hasResend: !!process.env.RESEND_API_KEY,
+      notify: process.env.FEEDBACK_NOTIFY_EMAIL,
+      from: process.env.FEEDBACK_FROM_EMAIL,
+      nodeEnv: process.env.NODE_ENV,
+    });
+
     // Optional: notify admin by email, but don't fail the request if this breaks
     if (resend && process.env.FEEDBACK_NOTIFY_EMAIL) {
       const adminTo = process.env.FEEDBACK_NOTIFY_EMAIL;
       const fromAddress =
-        process.env.FEEDBACK_FROM_EMAIL || "feedback@myaba.app";
+        process.env.FEEDBACK_FROM_EMAIL || "feedback@resend.dev";
+      // ^ default to resend.dev so it will work even if myaba.app isn't verified yet
 
       try {
-        await resend.emails.send({
+        const result = await resend.emails.send({
           from: `myABA Feedback <${fromAddress}>`,
           to: adminTo,
           subject: `[myABA] ${safeCategory} feedback`,
@@ -75,6 +85,8 @@ export default async function handler(
             (userId ? `User ID: ${userId}\n\n` : "\n") +
             `Message:\n${message}`,
         });
+
+        console.log("FEEDBACK EMAIL SEND RESULT", result);
       } catch (mailErr) {
         console.error("feedback email send error:", mailErr);
         // but we still return ok: true, because DB insert worked

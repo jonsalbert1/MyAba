@@ -30,17 +30,15 @@ export default async function handler(
   }
 
   try {
-    // 🔹 Upsert ensures we never get duplicate-key errors.
-    //    onConflict: "id" uses the primary key, which is what we want.
+    // 🔹 Upsert ONLY id + email so we don't clobber is_admin or names.
+    //     - If the row doesn't exist: it will be created.
+    //     - If it exists: only email is updated, other fields untouched.
     const { data, error } = await supabaseAdmin
       .from("profiles")
       .upsert(
         {
           id: userId,
           email,
-          first_name: null,
-          last_name: null,
-          is_admin: false,
         },
         { onConflict: "id" }
       )

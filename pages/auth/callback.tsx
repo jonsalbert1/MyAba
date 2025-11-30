@@ -69,7 +69,7 @@ export default function AuthCallbackPage() {
       if (noFirst && noLast) {
         router.replace("/auth/profile"); // prompt for first/last name
       } else {
-        router.replace("/quiz"); // main quiz home
+        router.replace("/"); // <<< UPDATED: go home instead of /quiz
       }
     };
 

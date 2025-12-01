@@ -539,11 +539,7 @@ export default function SafmedsWeek() {
           SAFMEDS — Last 7 Days of Runs
         </h1>
         <p className="text-sm text-slate-600">
-          Showing runs for the last 7 calendar days, based on your{" "}
-          <code className="rounded bg-slate-100 px-1 py-0.5 text-[11px]">
-            local_day
-          </code>{" "}
-          field.
+          Showing runs for the last 7 calendar days.
         </p>
       </header>
 

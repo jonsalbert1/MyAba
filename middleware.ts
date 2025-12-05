@@ -3,54 +3,46 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { createMiddlewareClient } from "@supabase/auth-helpers-nextjs";
 
-// Public routes that should NOT require authentication
-const PUBLIC_PATHS = [
-  "/",                 // landing page
-  "/login",            // magic link login
-  "/signup",           // if you add a signup page later
-  "/auth/callback",    // Supabase magic link callback
-  "/api/health",       // example public endpoint
-  "/api/signup-notify" // 🔔 allow signup notification API without auth
-];
-
-// Helper to check if route is public
-function isPublicPath(pathname: string) {
-  return PUBLIC_PATHS.some(
-    (path) => pathname === path || pathname.startsWith(path + "/")
-  );
-}
-
 export async function middleware(req: NextRequest) {
   const res = NextResponse.next();
+  const url = req.nextUrl;
 
-  // Supabase auth helper
+  // Routes that middleware should IGNORE / always allow
+  const publicPaths = ["/", "/login", "/auth/callback"];
+  const isPublic = publicPaths.some((path) => url.pathname === path);
+
+  if (isPublic) {
+    return res;
+  }
+
+  // Create Supabase client bound to this request/response
   const supabase = createMiddlewareClient({ req, res });
-
   const {
     data: { session },
   } = await supabase.auth.getSession();
 
-  const { pathname } = req.nextUrl;
-
-  // Allow explicitly public paths
-  if (isPublicPath(pathname)) {
-    return res;
-  }
-
-  // Everything else requires authentication
+  // If no session and trying to access a protected route, go to /login
   if (!session) {
-    const loginUrl = new URL("/login", req.url);
-    loginUrl.searchParams.set("redirectedFrom", pathname);
-    return NextResponse.redirect(loginUrl);
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.pathname = "/login";
+    redirectUrl.searchParams.set("redirectedFrom", req.nextUrl.pathname);
+    return NextResponse.redirect(redirectUrl);
   }
 
-  // User is authenticated → allow request through
+  // If already logged in and hitting /login, bounce home (optional)
+  if (session && url.pathname === "/login") {
+    url.pathname = "/";
+    return NextResponse.redirect(url);
+  }
+
   return res;
 }
 
-// Exclude Next.js internals, static assets, manifest, and brand images from middleware
+// Only protect specific paths – NOT /auth/*
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|manifest.json|brand/).*)",
+    "/quiz/:path*",   // all quiz pages
+    "/safmeds/:path*", // all safmeds pages
+    // add more here if you want, e.g. "/admin/:path*"
   ],
 };

@@ -4,12 +4,6 @@ import { useRouter } from "next/router";
 import { useUser, useSupabaseClient } from "@supabase/auth-helpers-react";
 import { getDomainTitle, getSubdomainText } from "@/lib/tco";
 
-// Localhost can switch between v1/v2 by setting NEXT_PUBLIC_QUIZ_TABLE in .env.local
-const QUIZ_TABLE =
-  process.env.NEXT_PUBLIC_QUIZ_TABLE ||
-  process.env.QUIZ_TABLE_NAME ||
-  "quiz_questions";
-
 type QuizItem = {
   id: string;
   domain?: string | null;
@@ -19,9 +13,8 @@ type QuizItem = {
   b?: string | null;
   c?: string | null;
   d?: string | null;
-  correct_answer?: string | null; // v1 may store "A/B/C/D"; v2 stores full correct option text
+  correct_answer?: "A" | "B" | "C" | "D" | null;
   rationale_correct?: string | null;
-  // ...rest of your fields
 };
 
 type AttemptStatus = "in_progress" | "completed";
@@ -39,42 +32,6 @@ type QuizAttempt = {
   status: AttemptStatus;
   created_at: string;
   updated_at: string;
-};
-
-type AnswerLetter = "A" | "B" | "C" | "D";
-
-const isAnswerLetter = (x: string | null | undefined): x is AnswerLetter =>
-  x === "A" || x === "B" || x === "C" || x === "D";
-
-const getOptionText = (item: QuizItem, letter: AnswerLetter | null) => {
-  if (!letter) return null;
-  return letter === "A"
-    ? item.a ?? null
-    : letter === "B"
-    ? item.b ?? null
-    : letter === "C"
-    ? item.c ?? null
-    : item.d ?? null;
-};
-
-// Single source of truth for correctness:
-// - v2: correct_answer is already the correct option text
-// - v1: correct_answer may be a letter; convert it to the matching option text
-const getCorrectText = (item: QuizItem) => {
-  const ca = item.correct_answer ?? null;
-  if (!ca) return null;
-  if (isAnswerLetter(ca)) return getOptionText(item, ca);
-  return ca;
-};
-
-// Derive correct letter only for display (never for grading truth)
-const getCorrectLetter = (item: QuizItem, correctText: string | null): AnswerLetter | null => {
-  if (!correctText) return null;
-  if (correctText === (item.a ?? null)) return "A";
-  if (correctText === (item.b ?? null)) return "B";
-  if (correctText === (item.c ?? null)) return "C";
-  if (correctText === (item.d ?? null)) return "D";
-  return null;
 };
 
 function normalizeArrayIds(arr: any[] | null | undefined): string[] {
@@ -228,7 +185,7 @@ export default function QuizRunnerPage() {
             };
 
             const { data: questions, error: qErr } = await supabase
-              .from(QUIZ_TABLE)
+              .from("quiz_questions")
               .select("*")
               .in("id", attemptRow.question_ids);
 
@@ -275,7 +232,7 @@ export default function QuizRunnerPage() {
 
         // Fresh quiz
         const { data: questions, error: qErr } = await supabase
-          .from(QUIZ_TABLE)
+          .from("quiz_questions")
           .select("*")
           .eq("domain", domain)
           .eq("subdomain", subCode)
@@ -357,13 +314,7 @@ export default function QuizRunnerPage() {
 
   const isCorrect = useMemo(() => {
     if (!currentItem || !selectedAnswer) return null;
-
-    const letter = isAnswerLetter(selectedAnswer) ? selectedAnswer : null;
-    const selectedText = getOptionText(currentItem, letter);
-    const correctText = getCorrectText(currentItem);
-
-    if (!selectedText || !correctText) return null;
-    return selectedText === correctText;
+    return selectedAnswer === currentItem.correct_answer;
   }, [currentItem, selectedAnswer]);
 
   // 🎯 optimistic grading + save
@@ -374,11 +325,7 @@ export default function QuizRunnerPage() {
     if (!attempt || !currentItem) return;
 
     // 1️⃣ Compute new scores locally
-    const letter = isAnswerLetter(choice) ? choice : null;
-    const selectedText = getOptionText(currentItem, letter);
-    const correctText = getCorrectText(currentItem);
-    const correct = !!selectedText && !!correctText && selectedText === correctText;
-
+    const correct = choice === currentItem.correct_answer;
     const newCorrect = attempt.correct_count + (correct ? 1 : 0);
     const newIncorrect = attempt.incorrect_count + (correct ? 0 : 1);
 
@@ -447,7 +394,10 @@ export default function QuizRunnerPage() {
             .maybeSingle();
 
           if (selErr) {
-            console.warn("quiz_subdomain_progress select error:", selErr);
+            console.warn(
+              "quiz_subdomain_progress select error:",
+              selErr
+            );
           } else if (!existing) {
             // No previous record → insert
             const { error: insErr2 } = await supabase
@@ -460,7 +410,10 @@ export default function QuizRunnerPage() {
               });
 
             if (insErr2) {
-              console.warn("quiz_subdomain_progress insert error:", insErr2);
+              console.warn(
+                "quiz_subdomain_progress insert error:",
+                insErr2
+              );
             }
           } else if (
             existing.best_accuracy_percent == null ||
@@ -475,7 +428,10 @@ export default function QuizRunnerPage() {
               .eq("subdomain", subCode);
 
             if (upd2Err) {
-              console.warn("quiz_subdomain_progress update error:", upd2Err);
+              console.warn(
+                "quiz_subdomain_progress update error:",
+                upd2Err
+              );
             }
           }
         }
@@ -511,10 +467,10 @@ export default function QuizRunnerPage() {
     if (!currentItem) return null;
 
     const options = [
-      { key: "A" as const, label: currentItem.a },
-      { key: "B" as const, label: currentItem.b },
-      { key: "C" as const, label: currentItem.c },
-      { key: "D" as const, label: currentItem.d },
+      { key: "A", label: currentItem.a },
+      { key: "B", label: currentItem.b },
+      { key: "C", label: currentItem.c },
+      { key: "D", label: currentItem.d },
     ].filter((opt) => opt.label);
 
     return (
@@ -524,9 +480,7 @@ export default function QuizRunnerPage() {
           let highlightClasses = "";
 
           if (showFeedback) {
-            const correctText = getCorrectText(currentItem);
-            const isCorrectAnswer = !!correctText && (opt.label ?? null) === correctText;
-
+            const isCorrectAnswer = currentItem.correct_answer === opt.key;
             if (isCorrectAnswer)
               highlightClasses = "border-green-500 bg-green-50";
             else if (isSelected)
@@ -556,8 +510,17 @@ export default function QuizRunnerPage() {
   const renderFeedback = () => {
     if (!showFeedback || !currentItem || isCorrect === null) return null;
 
-    const correctText = getCorrectText(currentItem);
-    const correctLetter = getCorrectLetter(currentItem, correctText);
+    const correctLetter = currentItem.correct_answer;
+    const correctText =
+      correctLetter === "A"
+        ? currentItem.a
+        : correctLetter === "B"
+        ? currentItem.b
+        : correctLetter === "C"
+        ? currentItem.c
+        : correctLetter === "D"
+        ? currentItem.d
+        : null;
 
     return (
       <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm">
@@ -565,12 +528,12 @@ export default function QuizRunnerPage() {
           {isCorrect ? "Correct! 🎉" : "Incorrect."}
         </div>
 
-        {correctText && (
+        {correctLetter && (
           <div className="mt-1 text-zinc-800">
             Correct answer:{" "}
             <span className="font-semibold">
-              {correctLetter ? `${correctLetter} — ` : ""}
-              {correctText}
+              {correctLetter}
+              {correctText ? ` — ${correctText}` : ""}
             </span>
           </div>
         )}
@@ -606,14 +569,16 @@ export default function QuizRunnerPage() {
             Quiz – {domainTitle || domain} {subCode && `• ${subCode}`}
           </h1>
 
-          {subdomainText && <p className="text-xs text-zinc-500 mt-1">{subdomainText}</p>}
+          {subdomainText && (
+            <p className="text-xs text-zinc-500 mt-1">{subdomainText}</p>
+          )}
 
           <div className="mt-1 text-xs text-zinc-500">
             Question {progressLabel}{" "}
             {attempt && (
               <>
-                • Correct: {attempt.correct_count} • Incorrect: {attempt.incorrect_count} • Status:{" "}
-                {attempt.status}
+                • Correct: {attempt.correct_count} • Incorrect:{" "}
+                {attempt.incorrect_count} • Status: {attempt.status}
               </>
             )}
           </div>
@@ -629,16 +594,24 @@ export default function QuizRunnerPage() {
         </button>
       </header>
 
-      {loading && <p className="text-sm text-zinc-600">{msg || "Loading quiz…"}</p>}
+      {loading && (
+        <p className="text-sm text-zinc-600">{msg || "Loading quiz…"}</p>
+      )}
 
-      {!loading && msg && <p className="text-sm text-red-600">{msg}</p>}
+      {!loading && msg && (
+        <p className="text-sm text-red-600">{msg}</p>
+      )}
 
-      {!loading && !msg && !currentItem && <p className="text-sm text-zinc-600">No question loaded.</p>}
+      {!loading && !msg && !currentItem && (
+        <p className="text-sm text-zinc-600">No question loaded.</p>
+      )}
 
       {!loading && currentItem && (
         <section>
           <div className="rounded-md border border-zinc-200 bg-white p-4 shadow-sm">
-            <p className="text-sm font-medium text-zinc-900">{currentItem.question}</p>
+            <p className="text-sm font-medium text-zinc-900">
+              {currentItem.question}
+            </p>
 
             {renderChoices()}
           </div>
@@ -672,7 +645,13 @@ export default function QuizRunnerPage() {
                       {/* Next Subdomain */}
                       {getNextSubdomain(subCode) && (
                         <button
-                          onClick={() => router.push(`/quiz/runner?code=${getNextSubdomain(subCode)!}`)}
+                          onClick={() =>
+                            router.push(
+                              `/quiz/runner?code=${getNextSubdomain(
+                                subCode
+                              )!}`
+                            )
+                          }
                           className="rounded-md border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50"
                         >
                           Next: {getNextSubdomain(subCode)}
@@ -692,7 +671,9 @@ export default function QuizRunnerPage() {
               </>
             )}
 
-            {submitting && <span className="text-xs text-zinc-500">Saving…</span>}
+            {submitting && (
+              <span className="text-xs text-zinc-500">Saving…</span>
+            )}
           </div>
 
           {renderFeedback()}

@@ -47,32 +47,8 @@ export default function LoginPage() {
         setError(error.message);
       } else {
         setSent(true);
-
-        // 🔔 Notify admin on every magic-link request (new or existing user)
-        try {
-          const resp = await fetch("/api/signup-notify", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              email: trimmed,
-              id: null, // we don't have user id yet here
-              created_at: null,
-            }),
-          });
-
-          if (!resp.ok) {
-            const body = await resp.json().catch(() => null);
-            console.error(
-              "signup-notify failed:",
-              resp.status,
-              resp.statusText,
-              body
-            );
-          }
-        } catch (notifyErr) {
-          // Don't break login if admin email fails
-          console.error("Failed to notify admin of signup/login:", notifyErr);
-        }
+        // ✅ No admin email, no signup notify
+        // Magic link auth only
       }
     } catch (err: any) {
       setError(err?.message || "Something went wrong.");

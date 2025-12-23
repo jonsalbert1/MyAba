@@ -68,7 +68,10 @@ const getCorrectText = (item: QuizItem) => {
 };
 
 // Derive correct letter only for display (never for grading truth)
-const getCorrectLetter = (item: QuizItem, correctText: string | null): AnswerLetter | null => {
+const getCorrectLetter = (
+  item: QuizItem,
+  correctText: string | null
+): AnswerLetter | null => {
   if (!correctText) return null;
   if (correctText === (item.a ?? null)) return "A";
   if (correctText === (item.b ?? null)) return "B";
@@ -139,12 +142,6 @@ export default function QuizRunnerPage() {
 
   const resumeFlag = router.query.resume === "1";
   const freshFlag = router.query.fresh === "1";
-
-  const limit = useMemo(() => {
-    const raw = router.query.limit as string | undefined;
-    const n = raw ? parseInt(raw, 10) : NaN;
-    return Number.isFinite(n) && n > 0 ? n : 10;
-  }, [router.query.limit]);
 
   const [attempt, setAttempt] = useState<QuizAttempt | null>(null);
   const [items, setItems] = useState<QuizItem[]>([]);
@@ -273,20 +270,21 @@ export default function QuizRunnerPage() {
           }
         }
 
-        // Fresh quiz
-        const { data: questions, error: qErr } = await supabase
-          .from(QUIZ_TABLE)
-          .select("*")
-          .eq("domain", domain)
-          .eq("subdomain", subCode)
-          .eq("is_active", true)
-          .limit(limit);
+        // Fresh quiz (API-based, canonical domain+code, no hard limit)
+        const qs = new URLSearchParams({ domain, code: subCode });
+        const resp = await fetch(`/api/quiz/fetch?${qs.toString()}`, {
+          method: "GET",
+          headers: { "Content-Type": "application/json" },
+        });
+        const payload = await resp.json().catch(() => null);
 
-        if (qErr) {
-          setMsg(qErr.message ?? "Error loading questions.");
+        if (!resp.ok || !payload || payload.ok === false) {
+          setMsg(payload?.error ?? "Error loading questions.");
           setLoading(false);
           return;
         }
+
+        const questions = Array.isArray(payload.items) ? payload.items : [];
 
         if (!questions || questions.length === 0) {
           setMsg("No questions found for this subdomain.");
@@ -349,7 +347,7 @@ export default function QuizRunnerPage() {
     };
 
     load();
-  }, [router.isReady, user, domain, subCode, resumeFlag, freshFlag, limit, supabase]);
+  }, [router.isReady, user, domain, subCode, resumeFlag, freshFlag, supabase]);
 
   // ============================
   // HANDLE ANSWER
@@ -377,7 +375,8 @@ export default function QuizRunnerPage() {
     const letter = isAnswerLetter(choice) ? choice : null;
     const selectedText = getOptionText(currentItem, letter);
     const correctText = getCorrectText(currentItem);
-    const correct = !!selectedText && !!correctText && selectedText === correctText;
+    const correct =
+      !!selectedText && !!correctText && selectedText === correctText;
 
     const newCorrect = attempt.correct_count + (correct ? 1 : 0);
     const newIncorrect = attempt.incorrect_count + (correct ? 0 : 1);
@@ -525,12 +524,11 @@ export default function QuizRunnerPage() {
 
           if (showFeedback) {
             const correctText = getCorrectText(currentItem);
-            const isCorrectAnswer = !!correctText && (opt.label ?? null) === correctText;
+            const isCorrectAnswer =
+              !!correctText && (opt.label ?? null) === correctText;
 
-            if (isCorrectAnswer)
-              highlightClasses = "border-green-500 bg-green-50";
-            else if (isSelected)
-              highlightClasses = "border-red-500 bg-red-50";
+            if (isCorrectAnswer) highlightClasses = "border-green-500 bg-green-50";
+            else if (isSelected) highlightClasses = "border-red-500 bg-red-50";
           } else if (isSelected) {
             highlightClasses = "border-blue-500 bg-blue-50";
           }
@@ -606,14 +604,16 @@ export default function QuizRunnerPage() {
             Quiz – {domainTitle || domain} {subCode && `• ${subCode}`}
           </h1>
 
-          {subdomainText && <p className="text-xs text-zinc-500 mt-1">{subdomainText}</p>}
+          {subdomainText && (
+            <p className="text-xs text-zinc-500 mt-1">{subdomainText}</p>
+          )}
 
           <div className="mt-1 text-xs text-zinc-500">
             Question {progressLabel}{" "}
             {attempt && (
               <>
-                • Correct: {attempt.correct_count} • Incorrect: {attempt.incorrect_count} • Status:{" "}
-                {attempt.status}
+                • Correct: {attempt.correct_count} • Incorrect:{" "}
+                {attempt.incorrect_count} • Status: {attempt.status}
               </>
             )}
           </div>
@@ -633,7 +633,9 @@ export default function QuizRunnerPage() {
 
       {!loading && msg && <p className="text-sm text-red-600">{msg}</p>}
 
-      {!loading && !msg && !currentItem && <p className="text-sm text-zinc-600">No question loaded.</p>}
+      {!loading && !msg && !currentItem && (
+        <p className="text-sm text-zinc-600">No question loaded.</p>
+      )}
 
       {!loading && currentItem && (
         <section>
@@ -672,7 +674,11 @@ export default function QuizRunnerPage() {
                       {/* Next Subdomain */}
                       {getNextSubdomain(subCode) && (
                         <button
-                          onClick={() => router.push(`/quiz/runner?code=${getNextSubdomain(subCode)!}`)}
+                          onClick={() =>
+                            router.push(
+                              `/quiz/runner?domain=${domain}&code=${getNextSubdomain(subCode)!}`
+                            )
+                          }
                           className="rounded-md border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50"
                         >
                           Next: {getNextSubdomain(subCode)}

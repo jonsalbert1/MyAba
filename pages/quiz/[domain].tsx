@@ -46,7 +46,8 @@ export default function DomainPage() {
   const supabase = useSupabaseClient();
   const user = useUser();
 
-  const domainParam = (router.query.domain as string | undefined)?.toUpperCase() ?? "";
+  const domainParam =
+    (router.query.domain as string | undefined)?.toUpperCase() ?? "";
   const domain = domainParam || "";
 
   const [rows, setRows] = useState<SubRow[]>([]);
@@ -55,7 +56,9 @@ export default function DomainPage() {
   const [resetting, setResetting] = useState(false);
 
   const totalSubs = DOMAIN_COUNTS[domain] ?? 0;
-  const domainTitle = domain ? getDomainTitle(domain) ?? `Domain ${domain}` : "";
+  const domainTitle = domain
+    ? getDomainTitle(domain) ?? `Domain ${domain}`
+    : "";
 
   // Build base rows for that domain
   const buildBaseRows = (): SubRow[] => {
@@ -177,18 +180,20 @@ export default function DomainPage() {
 
     setResetting(true);
     try {
-      // 1) Delete attempts + progress rows for this domain
-      await supabase
-        .from("quiz_attempts")
-        .delete()
-        .eq("user_id", user.id)
-        .eq("domain", domain);
+      // ✅ Use server-side reset (avoids RLS issues)
+      const resp = await fetch("/api/quiz/reset-domain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domain }),
+      });
 
-      await supabase
-        .from("quiz_subdomain_progress")
-        .delete()
-        .eq("user_id", user.id)
-        .eq("domain", domain);
+      const body = await resp.json().catch(() => null);
+
+      if (!resp.ok || !body?.ok) {
+        console.error("reset-domain failed:", resp.status, resp.statusText, body);
+        alert(body?.error || "Reset failed. See console for details.");
+        return;
+      }
 
       // 2) Clear localStorage keys for this domain
       if (typeof window !== "undefined") {
@@ -260,9 +265,7 @@ export default function DomainPage() {
         </p>
       )}
 
-      {!loading && msg && (
-        <p className="text-sm text-red-600">{msg}</p>
-      )}
+      {!loading && msg && <p className="text-sm text-red-600">{msg}</p>}
 
       {/* Subdomain list */}
       <section className="space-y-3">
@@ -274,9 +277,7 @@ export default function DomainPage() {
             : "Not started yet";
 
           const bestText =
-            sub.bestAccuracy != null
-              ? `${sub.bestAccuracy.toFixed(0)}%`
-              : "—";
+            sub.bestAccuracy != null ? `${sub.bestAccuracy.toFixed(0)}%` : "—";
 
           const buttonLabel = sub.hasLive
             ? `Continue ${sub.code}`

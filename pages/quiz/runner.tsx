@@ -9,6 +9,11 @@ const QUIZ_TABLE =
   process.env.NEXT_PUBLIC_QUIZ_TABLE ||
   process.env.QUIZ_TABLE_NAME ||
   "quiz_questions";
+const norm = (s: string | null | undefined) =>
+  (s ?? "")
+    .replace(/\u00A0/g, " ") // non-breaking spaces
+    .replace(/\s+/g, " ")    // collapse whitespace/newlines/tabs
+    .trim();
 
 type QuizItem = {
   id: string;
@@ -361,7 +366,7 @@ export default function QuizRunnerPage() {
     const correctText = getCorrectText(currentItem);
 
     if (!selectedText || !correctText) return null;
-    return selectedText === correctText;
+    return norm(selectedText) === norm(correctText);
   }, [currentItem, selectedAnswer]);
 
   // 🎯 optimistic grading + save
@@ -376,8 +381,7 @@ export default function QuizRunnerPage() {
     const selectedText = getOptionText(currentItem, letter);
     const correctText = getCorrectText(currentItem);
     const correct =
-      !!selectedText && !!correctText && selectedText === correctText;
-
+  !!selectedText && !!correctText && norm(selectedText) === norm(correctText);
     const newCorrect = attempt.correct_count + (correct ? 1 : 0);
     const newIncorrect = attempt.incorrect_count + (correct ? 0 : 1);
 

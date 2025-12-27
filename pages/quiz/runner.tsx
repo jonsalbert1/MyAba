@@ -9,11 +9,6 @@ const QUIZ_TABLE =
   process.env.NEXT_PUBLIC_QUIZ_TABLE ||
   process.env.QUIZ_TABLE_NAME ||
   "quiz_questions";
-const norm = (s: string | null | undefined) =>
-  (s ?? "")
-    .replace(/\u00A0/g, " ") // non-breaking spaces
-    .replace(/\s+/g, " ")    // collapse whitespace/newlines/tabs
-    .trim();
 
 type QuizItem = {
   id: string;
@@ -48,10 +43,25 @@ type QuizAttempt = {
 
 type AnswerLetter = "A" | "B" | "C" | "D";
 
+const DISPLAY_LETTERS: AnswerLetter[] = ["A", "B", "C", "D"];
+
+// Normalize answer text for robust equality checks (ignore case + extra whitespace)
+const stripChoicePrefix = (s: string | null | undefined) => {
+  const x = String(s ?? "");
+  // Remove leading "A. ", "B) ", "C: ", "D - " (common import artifacts)
+  return x.replace(/^\s*[A-D]\s*[\.)\:\-]\s*/i, "").trim();
+};
+
+const norm = (s: string | null | undefined) => stripChoicePrefix(s)
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+
 const isAnswerLetter = (x: string | null | undefined): x is AnswerLetter =>
   x === "A" || x === "B" || x === "C" || x === "D";
 
-const getOptionText = (item: QuizItem, letter: AnswerLetter | null) => {
+const getBaseOptionText = (item: QuizItem, letter: AnswerLetter | null) => {
   if (!letter) return null;
   return letter === "A"
     ? item.a ?? null
@@ -62,29 +72,91 @@ const getOptionText = (item: QuizItem, letter: AnswerLetter | null) => {
     : item.d ?? null;
 };
 
+// Small deterministic hash (FNV-1a) used for stable, repeatable rotations.
+const hash32 = (input: string) => {
+  let h = 0x811c9dc5; // 2166136261
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193); // 16777619
+  }
+  return h >>> 0;
+};
+
+const shuffledIndices = (n: number, seed: number) => {
+  const arr = Array.from({ length: n }, (_, i) => i);
+  let x = seed || 1;
+  const next = () => {
+    // xorshift32
+    x ^= x << 13;
+    x ^= x >>> 17;
+    x ^= x << 5;
+    x >>>= 0;
+    return x;
+  };
+
+  for (let i = n - 1; i > 0; i--) {
+    const j = next() % (i + 1);
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+};
+
+// Build the answer choices in a stable shuffled order.
+// This lets us "rotate answers" for presentation WITHOUT breaking correctness,
+// because we always grade by the selected answer TEXT.
+const getDisplayedOptions = (item: QuizItem, keySeed: string) => {
+  const base = [
+    { baseLetter: "A" as const, text: stripChoicePrefix(item.a) },
+    { baseLetter: "B" as const, text: stripChoicePrefix(item.b) },
+    { baseLetter: "C" as const, text: stripChoicePrefix(item.c) },
+    { baseLetter: "D" as const, text: stripChoicePrefix(item.d) },
+  ];
+
+  const seed = hash32(`${keySeed}:${item.id ?? item.question ?? ""}`);
+  const order = shuffledIndices(base.length, seed);
+
+  return order.map((baseIdx, displayIdx) => ({
+    displayLetter: DISPLAY_LETTERS[displayIdx],
+    baseLetter: base[baseIdx].baseLetter,
+    text: base[baseIdx].text,
+  }));
+};
+
+const getDisplayedText = (
+  item: QuizItem,
+  displayLetter: AnswerLetter | null,
+  keySeed: string
+) => {
+  if (!displayLetter) return null;
+  const opts = getDisplayedOptions(item, keySeed);
+  return opts.find((o) => o.displayLetter === displayLetter)?.text ?? null;
+};
+
 // Single source of truth for correctness:
 // - v2: correct_answer is already the correct option text
 // - v1: correct_answer may be a letter; convert it to the matching option text
 const getCorrectText = (item: QuizItem) => {
   const ca = item.correct_answer ?? null;
   if (!ca) return null;
-  if (isAnswerLetter(ca)) return getOptionText(item, ca);
-  return ca;
+  if (isAnswerLetter(ca)) return getBaseOptionText(item, ca);
+  return stripChoicePrefix(ca);
 };
 
-// Derive correct letter only for display (never for grading truth)
-const getCorrectLetter = (
+// Derive correct DISPLAY letter (A/B/C/D as shown to the learner) for UI only.
+// Never use this for grading truth.
+const getCorrectDisplayLetter = (
   item: QuizItem,
+  keySeed: string,
   correctText: string | null
 ): AnswerLetter | null => {
   if (!correctText) return null;
-  if (correctText === (item.a ?? null)) return "A";
-  if (correctText === (item.b ?? null)) return "B";
-  if (correctText === (item.c ?? null)) return "C";
-  if (correctText === (item.d ?? null)) return "D";
+  const opts = getDisplayedOptions(item, keySeed);
+  const ct = norm(correctText);
+  for (const o of opts) {
+    if (norm(o.text) === ct) return o.displayLetter;
+  }
   return null;
 };
-
 function normalizeArrayIds(arr: any[] | null | undefined): string[] {
   if (!arr) return [];
   return arr.map((x) => String(x));
@@ -147,6 +219,9 @@ export default function QuizRunnerPage() {
 
   const resumeFlag = router.query.resume === "1";
   const freshFlag = router.query.fresh === "1";
+
+  const QUIZ_SIZE = 10;
+  const BANK_LIMIT = 50;
 
   const [attempt, setAttempt] = useState<QuizAttempt | null>(null);
   const [items, setItems] = useState<QuizItem[]>([]);
@@ -275,21 +350,20 @@ export default function QuizRunnerPage() {
           }
         }
 
-        // Fresh quiz (API-based, canonical domain+code, no hard limit)
-        const qs = new URLSearchParams({ domain, code: subCode });
-        const resp = await fetch(`/api/quiz/fetch?${qs.toString()}`, {
-          method: "GET",
-          headers: { "Content-Type": "application/json" },
-        });
-        const payload = await resp.json().catch(() => null);
+        // Fresh quiz
+        const { data: questions, error: qErr } = await supabase
+          .from(QUIZ_TABLE)
+          .select("*")
+          .eq("domain", domain)
+          .eq("subdomain", subCode)
+          .eq("is_active", true)
+          .limit(BANK_LIMIT);
 
-        if (!resp.ok || !payload || payload.ok === false) {
-          setMsg(payload?.error ?? "Error loading questions.");
+        if (qErr) {
+          setMsg(qErr.message ?? "Error loading questions.");
           setLoading(false);
           return;
         }
-
-        const questions = Array.isArray(payload.items) ? payload.items : [];
 
         if (!questions || questions.length === 0) {
           setMsg("No questions found for this subdomain.");
@@ -297,7 +371,17 @@ export default function QuizRunnerPage() {
           return;
         }
 
-        const quizItems: QuizItem[] = questions.map((q: any) => ({
+// Rotate WHICH questions (and their order) per attempt, per subdomain.
+// We sample QUIZ_SIZE questions from a larger BANK_LIMIT bank.
+const bank = questions ?? [];
+const attemptSeed = hash32(`${user?.id ?? "anon"}:${subCode}:${Date.now()}`);
+const qOrder = shuffledIndices(bank.length, attemptSeed);
+const selectedQuestions = qOrder
+  .map((i) => bank[i])
+  .slice(0, Math.min(QUIZ_SIZE, bank.length));
+
+const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
+
           id: String(q.id),
           domain: q.domain,
           subdomain: q.subdomain,
@@ -361,27 +445,27 @@ export default function QuizRunnerPage() {
   const isCorrect = useMemo(() => {
     if (!currentItem || !selectedAnswer) return null;
 
-    const letter = isAnswerLetter(selectedAnswer) ? selectedAnswer : null;
-    const selectedText = getOptionText(currentItem, letter);
     const correctText = getCorrectText(currentItem);
+    if (!correctText) return null;
 
-    if (!selectedText || !correctText) return null;
-    return norm(selectedText) === norm(correctText);
+    // selectedAnswer stores the displayed option TEXT (not a letter)
+    return norm(selectedAnswer) === norm(correctText);
   }, [currentItem, selectedAnswer]);
 
   // 🎯 optimistic grading + save
-  const handleSelect = (choice: string) => {
+  const handleSelect = (choiceText: string) => {
+    if (!choiceText) return;
     if (showFeedback || submitting) return;
-    setSelectedAnswer(choice);
+    setSelectedAnswer(choiceText);
 
     if (!attempt || !currentItem) return;
 
     // 1️⃣ Compute new scores locally
-    const letter = isAnswerLetter(choice) ? choice : null;
-    const selectedText = getOptionText(currentItem, letter);
+    // We store the *option text* as the user's selectedAnswer.
+    // correct_answer in v2 is also stored as the *option text*.
     const correctText = getCorrectText(currentItem);
-    const correct =
-  !!selectedText && !!correctText && norm(selectedText) === norm(correctText);
+    const correct = !!correctText && norm(choiceText) === norm(correctText);
+
     const newCorrect = attempt.correct_count + (correct ? 1 : 0);
     const newIncorrect = attempt.incorrect_count + (correct ? 0 : 1);
 
@@ -523,16 +607,17 @@ export default function QuizRunnerPage() {
     return (
       <div className="space-y-2 mt-4">
         {options.map((opt) => {
-          const isSelected = selectedAnswer === opt.key;
+          const isSelected = selectedAnswer === (opt.label ?? null);
           let highlightClasses = "";
 
           if (showFeedback) {
             const correctText = getCorrectText(currentItem);
-            const isCorrectAnswer =
-              !!correctText && (opt.label ?? null) === correctText;
+            const isCorrectAnswer = !!correctText && (opt.label ?? null) === correctText;
 
-            if (isCorrectAnswer) highlightClasses = "border-green-500 bg-green-50";
-            else if (isSelected) highlightClasses = "border-red-500 bg-red-50";
+            if (isCorrectAnswer)
+              highlightClasses = "border-green-500 bg-green-50";
+            else if (isSelected)
+              highlightClasses = "border-red-500 bg-red-50";
           } else if (isSelected) {
             highlightClasses = "border-blue-500 bg-blue-50";
           }
@@ -540,13 +625,12 @@ export default function QuizRunnerPage() {
           return (
             <button
               key={opt.key}
-              onClick={() => handleSelect(opt.key)}
+              onClick={() => handleSelect(opt.label ?? "")}
               disabled={showFeedback || submitting}
               className={`w-full rounded-md border px-3 py-2 text-left text-sm ${
                 highlightClasses || "border-zinc-300 bg-white"
               } disabled:cursor-default`}
             >
-              <span className="font-semibold mr-2">{opt.key}.</span>
               <span>{opt.label}</span>
             </button>
           );
@@ -559,7 +643,7 @@ export default function QuizRunnerPage() {
     if (!showFeedback || !currentItem || isCorrect === null) return null;
 
     const correctText = getCorrectText(currentItem);
-    const correctLetter = getCorrectLetter(currentItem, correctText);
+    const correctLetter = getCorrectDisplayLetter(currentItem, subCode, correctText);
 
     return (
       <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm">
@@ -570,10 +654,7 @@ export default function QuizRunnerPage() {
         {correctText && (
           <div className="mt-1 text-zinc-800">
             Correct answer:{" "}
-            <span className="font-semibold">
-              {correctLetter ? `${correctLetter} — ` : ""}
-              {correctText}
-            </span>
+            <span className="font-semibold">{correctText}</span>
           </div>
         )}
 
@@ -608,16 +689,14 @@ export default function QuizRunnerPage() {
             Quiz – {domainTitle || domain} {subCode && `• ${subCode}`}
           </h1>
 
-          {subdomainText && (
-            <p className="text-xs text-zinc-500 mt-1">{subdomainText}</p>
-          )}
+          {subdomainText && <p className="text-xs text-zinc-500 mt-1">{subdomainText}</p>}
 
           <div className="mt-1 text-xs text-zinc-500">
             Question {progressLabel}{" "}
             {attempt && (
               <>
-                • Correct: {attempt.correct_count} • Incorrect:{" "}
-                {attempt.incorrect_count} • Status: {attempt.status}
+                • Correct: {attempt.correct_count} • Incorrect: {attempt.incorrect_count} • Status:{" "}
+                {attempt.status}
               </>
             )}
           </div>
@@ -637,9 +716,7 @@ export default function QuizRunnerPage() {
 
       {!loading && msg && <p className="text-sm text-red-600">{msg}</p>}
 
-      {!loading && !msg && !currentItem && (
-        <p className="text-sm text-zinc-600">No question loaded.</p>
-      )}
+      {!loading && !msg && !currentItem && <p className="text-sm text-zinc-600">No question loaded.</p>}
 
       {!loading && currentItem && (
         <section>
@@ -678,11 +755,7 @@ export default function QuizRunnerPage() {
                       {/* Next Subdomain */}
                       {getNextSubdomain(subCode) && (
                         <button
-                          onClick={() =>
-                            router.push(
-                              `/quiz/runner?domain=${domain}&code=${getNextSubdomain(subCode)!}`
-                            )
-                          }
+                          onClick={() => router.push(`/quiz/runner?code=${getNextSubdomain(subCode)!}`)}
                           className="rounded-md border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50"
                         >
                           Next: {getNextSubdomain(subCode)}
@@ -710,4 +783,13 @@ export default function QuizRunnerPage() {
       )}
     </main>
   );
+// Rotate WHICH questions (and their order) per attempt, per subdomain.
+// We sample QUIZ_SIZE questions from a larger BANK_LIMIT bank.
+const bank = questions ?? [];
+const attemptSeed = hash32(`${user?.id ?? "anon"}:${subCode}:${Date.now()}`);
+const qOrder = shuffledIndices(bank.length, attemptSeed);
+const selectedQuestions = qOrder
+  .map((i) => bank[i])
+  .slice(0, Math.min(QUIZ_SIZE, bank.length));
+
 }

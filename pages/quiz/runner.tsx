@@ -5,11 +5,7 @@ import { useUser, useSupabaseClient } from "@supabase/auth-helpers-react";
 import { getDomainTitle, getSubdomainText } from "@/lib/tco";
 
 // Localhost can switch between v1/v2 by setting NEXT_PUBLIC_QUIZ_TABLE in .env.local
-const QUIZ_TABLE =
-  process.env.NEXT_PUBLIC_QUIZ_TABLE ||
-  process.env.QUIZ_TABLE_NAME ||
-  "quiz_questions";
-
+const QUIZ_TABLE = "quiz_questions_v2";
 type QuizItem = {
   id: string;
   domain?: string | null;

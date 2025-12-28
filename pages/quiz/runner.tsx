@@ -783,13 +783,4 @@ const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
       )}
     </main>
   );
-// Rotate WHICH questions (and their order) per attempt, per subdomain.
-// We sample QUIZ_SIZE questions from a larger BANK_LIMIT bank.
-const bank = questions ?? [];
-const attemptSeed = hash32(`${user?.id ?? "anon"}:${subCode}:${Date.now()}`);
-const qOrder = shuffledIndices(bank.length, attemptSeed);
-const selectedQuestions = qOrder
-  .map((i) => bank[i])
-  .slice(0, Math.min(QUIZ_SIZE, bank.length));
-
 }

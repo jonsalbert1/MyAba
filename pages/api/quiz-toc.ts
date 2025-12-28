@@ -48,7 +48,7 @@ export default async function handler(req: any, res: any) {
 
     // Build base query
     let query = supabase
-      .from("quiz_questions")
+      .from("quiz_questions_2")
       .select("domain, subdomain, subdomain_text, is_active", { count: "exact" });
 
     if (onlyActive) query = query.eq("is_active", true);

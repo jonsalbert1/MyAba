@@ -75,7 +75,7 @@ type FetchResponse =
       ok: true;
       domain: DomainLetter;
       code: string;
-      source: "quiz_questions_v2" | "quiz_questions";
+      source: "quiz_questions_v2";
       count: number;
       items: any[];
       debug?: any;
@@ -120,7 +120,7 @@ export default async function handler(
       image_path
     `;
 
-    const runQuery = async (table: "quiz_questions_v2" | "quiz_questions") => {
+    const runQuery = async (table: "quiz_questions_v2") => {
       let q = supabaseAdmin
         .from(table)
         .select(selectCols)
@@ -136,9 +136,9 @@ export default async function handler(
       return q;
     };
 
-    // ✅ Try v2 first
-    let source: "quiz_questions_v2" | "quiz_questions" = "quiz_questions_v2";
-    let { data, error } = await runQuery("quiz_questions_v2");
+    // ✅ Use v2 only (no fallback)
+    const source: "quiz_questions_v2" = "quiz_questions_v2";
+    const { data, error } = await runQuery("quiz_questions_v2");
 
     if (error) {
       console.error("Supabase quiz_questions_v2 error:", error);
@@ -147,23 +147,6 @@ export default async function handler(
         error: "Database error",
         details: error.message,
       });
-    }
-
-    // ✅ Fallback to v1 if v2 empty for this subdomain
-    if (!data || data.length === 0) {
-      source = "quiz_questions";
-      const r = await runQuery("quiz_questions");
-      data = r.data;
-      error = r.error;
-
-      if (error) {
-        console.error("Supabase quiz_questions error:", error);
-        return res.status(500).json({
-          ok: false,
-          error: "Database error",
-          details: error.message,
-        });
-      }
     }
 
     return res.status(200).json({

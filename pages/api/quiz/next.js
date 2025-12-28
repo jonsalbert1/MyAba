@@ -2,7 +2,7 @@
 import { createPagesServerClient } from "@supabase/auth-helpers-nextjs";
 
 const PAGE = 10;
-const TABLE = process.env.QUIZ_TABLE_NAME || "quiz_questions";
+const TABLE = process.env.QUIZ_TABLE_NAME || "quiz_questions_v2";
 
 export default async function handler(req, res) {
   if (req.method !== "GET") {

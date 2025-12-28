@@ -29,7 +29,7 @@ type QuizRow = {
   // v2 (and possibly v1): correct answer as TEXT (or legacy letter)
   correct_answer?: string | null;
 
-  // legacy v1: correct key as a|b|c|d
+  // legacy v1: correct key as a|b|c|d (kept for compatibility if column exists)
   correct?: string | null;
 };
 
@@ -46,16 +46,15 @@ const getOptionText = (item: QuizRow, letter: AnswerLetterUpper | null) => {
 
 // Single truth for correctness:
 // - v2: correct_answer is already correct option text
-// - v1: correct_answer may be "A/B/C/D" OR table may have "correct" = "a/b/c/d"
+// - if correct_answer is "A/B/C/D", map to option text
+// - if correct_answer absent but "correct" exists (a/b/c/d), map to option text
 const getCorrectText = (item: QuizRow) => {
-  // Prefer correct_answer if present
   const ca = item.correct_answer ?? null;
   if (ca) {
     if (isAnswerLetterUpper(ca)) return getOptionText(item, ca);
     return ca; // text truth
   }
 
-  // Fall back to legacy "correct" (a/b/c/d)
   const legacy = (item.correct ?? "").toLowerCase();
   if (legacy === "a" || legacy === "b" || legacy === "c" || legacy === "d") {
     const up = choiceLowerToUpper(legacy as ChoiceLower);
@@ -77,7 +76,8 @@ export default async function handler(req: any, res: any) {
     if (!subdomain || !question_id || !/^[a-d]$/.test(choiceNorm)) {
       return json(res, 400, {
         ok: false,
-        error: "Missing/invalid fields (need subdomain, question_id, choice in a-d)",
+        error:
+          "Missing/invalid fields (need subdomain, question_id, choice in a-d)",
       });
     }
 
@@ -86,37 +86,12 @@ export default async function handler(req: any, res: any) {
 
     const selectCols = "id, subdomain, a, b, c, d, correct_answer, correct";
 
-    // 1) Try v2 first
-    let source: "quiz_questions_v2" | "quiz_questions" = "quiz_questions_v2";
-
+    // ✅ Use v2 only (no fallback)
     const q2 = await supabase
       .from("quiz_questions_v2")
       .select(selectCols)
       .eq("id", question_id)
       .maybeSingle();
-
-    let row: QuizRow | null = (q2.data as any) ?? null;
-
-    // If not found in v2, fall back to v1
-    if (!row) {
-      source = "quiz_questions";
-      const q1 = await supabase
-        .from("quiz_questions")
-        .select(selectCols)
-        .eq("id", question_id)
-        .maybeSingle();
-
-      row = (q1.data as any) ?? null;
-
-      if (q1.error) {
-        return json(res, 400, {
-          ok: false,
-          error: q1.error.message,
-          code: (q1.error as any)?.code,
-          details: (q1.error as any)?.details,
-        });
-      }
-    }
 
     if (q2.error) {
       return json(res, 400, {
@@ -126,6 +101,8 @@ export default async function handler(req: any, res: any) {
         details: (q2.error as any)?.details,
       });
     }
+
+    const row: QuizRow | null = (q2.data as any) ?? null;
 
     if (!row) {
       return json(res, 400, { ok: false, error: "Question not found" });
@@ -138,20 +115,15 @@ export default async function handler(req: any, res: any) {
     const is_correct =
       !!selectedText && !!correctText && norm(selectedText) === norm(correctText);
 
-    // Save attempt (keep storing choice as a|b|c|d; is_correct is now text-true)
-    const insert = {
+    // Save attempt (store choice as a|b|c|d; is_correct is text-true)
+    const insert: any = {
       user_id: user_id ?? null,
       subdomain,
       question_id,
       choice: choiceLower,
       is_correct,
-      source, // optional: if your table doesn't have this column, remove this line
+      // source: "quiz_questions_v2", // enable ONLY if your quiz_attempts table has this column
     };
-
-    // If your quiz_attempts table does NOT have "source", remove it safely:
-    // (If you keep it and the column doesn't exist, Postgres will error.)
-    // Safer default: comment it out unless you've added the column.
-    delete (insert as any).source;
 
     const { data, error } = await supabase
       .from("quiz_attempts")
@@ -179,3 +151,4 @@ export default async function handler(req: any, res: any) {
     return json(res, 500, { ok: false, error: e.message || "Unexpected error" });
   }
 }
+

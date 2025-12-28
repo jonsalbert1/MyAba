@@ -6,7 +6,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const limit = Math.max(1, Math.min(20, Number(req.query.limit ?? 5)));
     const { data, error } = await supabaseAdmin
-      .from("quiz_questions")
+      .from("quiz_questions_v2")
       .select("id, domain, subdomain, question")
       .order("subdomain", { ascending: true })
       .limit(limit);

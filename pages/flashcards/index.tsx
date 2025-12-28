@@ -1,5 +1,6 @@
 // pages/flashcards/index.tsx
 import { useEffect, useState } from "react";
+import { useUser, useSupabaseClient } from "@supabase/auth-helpers-react";
 import FlipCard from "@/components/FlipCard";
 
 type DeckMeta = {
@@ -15,7 +16,18 @@ type Card = {
   deck_number: number;
 };
 
+type Profile = {
+  first_name: string | null;
+  last_name: string | null;
+};
+
 export default function FlashcardsPage() {
+  const user = useUser();
+  const supabase = useSupabaseClient();
+
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(false);
+
   const [decks, setDecks] = useState<DeckMeta[]>([]);
   const [selectedDeck, setSelectedDeck] = useState<DeckMeta | null>(null);
   const [cards, setCards] = useState<Card[]>([]);
@@ -24,6 +36,58 @@ export default function FlashcardsPage() {
   const [loadingDecks, setLoadingDecks] = useState(false);
   const [loadingCards, setLoadingCards] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  /* =========================
+     A) Load profile (same as Home)
+  ========================== */
+  useEffect(() => {
+    const loadProfile = async () => {
+      if (!user) {
+        setProfile(null);
+        return;
+      }
+      try {
+        setLoadingProfile(true);
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("first_name, last_name")
+          .eq("id", user.id)
+          .maybeSingle();
+
+        if (error) {
+          console.error("Flashcards profile load error", error);
+        }
+
+        setProfile((data as Profile) ?? null);
+      } finally {
+        setLoadingProfile(false);
+      }
+    };
+
+    loadProfile();
+  }, [user, supabase]);
+
+  const fullName =
+    (profile?.first_name?.trim() || "") +
+    (profile?.last_name ? ` ${profile.last_name.trim()}` : "");
+
+  // Fallback if profile is missing
+  const fallbackName = (() => {
+    if (!user?.email) return "there";
+    const local = user.email.split("@")[0] || "";
+    const cleaned = local.replace(/[._-]+/g, " ");
+    const parts = cleaned
+      .split(" ")
+      .filter(Boolean)
+      .map(
+        (part: string) =>
+          part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
+      );
+    return parts.length > 0 ? parts.join(" ") : "there";
+  })();
+
+  const displayName =
+    fullName.trim().length > 0 ? fullName.trim() : fallbackName;
 
   /* =========================
      1) Load deck list on mount
@@ -101,7 +165,6 @@ export default function FlashcardsPage() {
           `loaded ${cardsFromApi.length} cards [class_code=${class_code}, deck_number=${deck_number}]`
         );
 
-        // default: keep order as-is; we’ll have a Shuffle button
         setCards(cardsFromApi);
         setCurrentIndex(0);
         setFlipped(false);
@@ -118,13 +181,9 @@ export default function FlashcardsPage() {
 
   /* =========================
      3) Keyboard shortcuts
-        Space = flip
-        N / → = next
-        P / ← = previous
   ========================== */
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't steal keys when typing in inputs/textareas
       const target = e.target as HTMLElement | null;
       if (
         target &&
@@ -135,14 +194,12 @@ export default function FlashcardsPage() {
         return;
       }
 
-      // Flip with spacebar
       if (e.code === "Space") {
         e.preventDefault();
         setFlipped((prev) => !prev);
         return;
       }
 
-      // Next: N or ArrowRight
       if (e.key === "n" || e.key === "N" || e.code === "ArrowRight") {
         e.preventDefault();
         setCurrentIndex((prev) => {
@@ -154,7 +211,6 @@ export default function FlashcardsPage() {
         return;
       }
 
-      // Previous: P or ArrowLeft
       if (e.key === "p" || e.key === "P" || e.code === "ArrowLeft") {
         e.preventDefault();
         setCurrentIndex((prev) => {
@@ -218,11 +274,18 @@ export default function FlashcardsPage() {
      5) Render
   ========================== */
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8">
-      <h1 className="text-2xl font-bold mb-2">Flashcards</h1>
-      <p className="text-sm text-slate-600 mb-4">
-        Space = flip • N / → = next • P / ← = previous
-      </p>
+    <div className="max-w-4xl mx-auto px-4 py-8 space-y-6">
+      <header className="space-y-2">
+        <h1 className="text-3xl md:text-5xl font-semibold tracking-tight text-blue-900">
+          Flashcards
+        </h1>
+        <p className="text-lg text-slate-700">
+          Welcome, <span className="font-semibold">{displayName}</span>.
+        </p>
+        <p className="text-sm text-slate-600">
+          Space = flip • N / → = next • P / ← = previous
+        </p>
+      </header>
 
       {error && (
         <div className="mb-4 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
@@ -263,7 +326,6 @@ export default function FlashcardsPage() {
           </select>
         </label>
 
-        {/* Deck info */}
         {selectedDeck && cards.length > 0 && (
           <span className="text-sm text-slate-600">
             {selectedDeck.class_code} — Deck {selectedDeck.deck_number} • Card{" "}

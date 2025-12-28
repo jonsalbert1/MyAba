@@ -47,6 +47,8 @@ export default function LoginPage() {
         setError(error.message);
       } else {
         setSent(true);
+        // ✅ No admin email, no signup notify
+        // Magic link auth only
       }
     } catch (err: any) {
       setError(err?.message || "Something went wrong.");
@@ -89,11 +91,7 @@ export default function LoginPage() {
               />
             </div>
 
-            {error && (
-              <p className="text-sm text-red-600">
-                {error}
-              </p>
-            )}
+            {error && <p className="text-sm text-red-600">{error}</p>}
 
             <button
               type="submit"

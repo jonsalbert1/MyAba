@@ -20,17 +20,30 @@ function makeSubdomainCode(domain: DomainLetter, index: number): string {
   return `${domain}${index.toString().padStart(2, "0")}`;
 }
 
+/**
+ * Accepts:
+ *  - ?domain=A&code=A01
+ *  - ?code=A01              (domain inferred from code)
+ *  - ?domain=A&code=1       (code inferred to A01)
+ */
 function normalizeDomainAndCode(req: NextApiRequest): {
   domain: DomainLetter | null;
   code: string | null; // canonical, e.g. "C03"
 } {
-  const rawDomain = String(req.query.domain ?? "").toUpperCase();
-  if (!rawDomain || !["A","B","C","D","E","F","G","H","I"].includes(rawDomain)) {
+  const rawDomain = String(req.query.domain ?? "").toUpperCase().trim();
+  const rawCode = String(req.query.code ?? "").toUpperCase().trim();
+
+  // Infer domain if not explicitly provided
+  let domain: DomainLetter | null = null;
+
+  if (rawDomain && ["A", "B", "C", "D", "E", "F", "G", "H", "I"].includes(rawDomain)) {
+    domain = rawDomain as DomainLetter;
+  } else if (/^[A-I][0-9]+$/.test(rawCode)) {
+    domain = rawCode[0] as DomainLetter;
+  } else {
     return { domain: null, code: null };
   }
-  const domain = rawDomain as DomainLetter;
 
-  const rawCode = String(req.query.code ?? "").toUpperCase();
   if (!rawCode) return { domain: null, code: null };
 
   let num: number | null = null;
@@ -57,9 +70,21 @@ function normalizeDomainAndCode(req: NextApiRequest): {
   return { domain, code: canonicalCode };
 }
 
+type FetchResponse =
+  | {
+      ok: true;
+      domain: DomainLetter;
+      code: string;
+      source: "quiz_questions_v2";
+      count: number;
+      items: any[];
+      debug?: any;
+    }
+  | { ok: false; error: string; details?: string };
+
 export default async function handler(
   req: NextApiRequest,
-  res: NextApiResponse
+  res: NextApiResponse<FetchResponse>
 ) {
   res.setHeader("Cache-Control", "no-store");
 
@@ -77,56 +102,61 @@ export default async function handler(
     }
 
     const limit = Math.max(1, Math.min(50, Number(req.query.limit ?? 10)));
-    const shuffle =
-      req.query.shuffle === "1" || req.query.shuffle === "true";
-    const debug =
-      req.query.debug === "1" || req.query.debug === "true";
+    const shuffle = req.query.shuffle === "1" || req.query.shuffle === "true";
+    const debug = req.query.debug === "1" || req.query.debug === "true";
 
-    let query = supabaseAdmin
-      .from("quiz_questions")
-      .select(
-        `
-        id,
-        domain,
-        subdomain,
-        subdomain_text,
-        question,
-        a,
-        b,
-        c,
-        d,
-        correct_answer,
-        rationale_correct,
-        image_path
-      `
-      )
-      .eq("domain", domain)
-      .eq("subdomain", code);
+    const selectCols = `
+      id,
+      domain,
+      subdomain,
+      subdomain_text,
+      question,
+      a,
+      b,
+      c,
+      d,
+      correct_answer,
+      rationale_correct,
+      image_path
+    `;
 
-    if (shuffle) {
-      query = query.order("id", { ascending: false });
-    } else {
-      query = query.order("id", { ascending: true });
-    }
+    const runQuery = async (table: "quiz_questions_v2") => {
+      let q = supabaseAdmin
+        .from(table)
+        .select(selectCols)
+        .eq("domain", domain)
+        .eq("subdomain", code);
 
-    query = query.limit(limit);
+      q = shuffle
+        ? q.order("id", { ascending: false })
+        : q.order("id", { ascending: true });
 
-    const { data, error } = await query;
+      q = q.limit(limit);
+
+      return q;
+    };
+
+    // ✅ Use v2 only (no fallback)
+    const source: "quiz_questions_v2" = "quiz_questions_v2";
+    const { data, error } = await runQuery("quiz_questions_v2");
 
     if (error) {
-      console.error("Supabase quiz_questions error:", error);
-      return res
-        .status(500)
-        .json({ ok: false, error: "Database error", details: error.message });
+      console.error("Supabase quiz_questions_v2 error:", error);
+      return res.status(500).json({
+        ok: false,
+        error: "Database error",
+        details: error.message,
+      });
     }
 
     return res.status(200).json({
       ok: true,
       domain,
       code,
+      source,
       count: data?.length ?? 0,
       items: data ?? [],
-      debug: debug ? { domain, code, limit, shuffle } : undefined,
+      debug: debug ? { domain, code, limit, shuffle, source } : undefined,
     });
   } catch (err: any) {
     console.error("Quiz fetch handler error:", err);

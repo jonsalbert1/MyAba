@@ -71,10 +71,15 @@ export default function SafmedsTrials() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showDefinition, setShowDefinition] = useState(false);
 
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving] = useState(false); // still used to avoid double saves if needed
   const [message, setMessage] = useState<string | null>(null);
   const [loadingDecks, setLoadingDecks] = useState(false);
   const [loadingCards, setLoadingCards] = useState(false);
+
+  /* NEW: track last button pressed for visual feedback */
+  const [lastMark, setLastMark] = useState<"correct" | "incorrect" | null>(
+    null
+  );
 
   /* =========================
      TODAY'S DATA FIXED
@@ -191,7 +196,7 @@ export default function SafmedsTrials() {
     if (user) loadTodayRuns();
   }, [user]);
 
-  /* Auto-save fix */
+  /* Auto-save: save as soon as timer ends (if there were responses) */
   useEffect(() => {
     if (timeLeft === 0 && hasStarted && !autoSaved && totalAnswers > 0) {
       saveRun(true);
@@ -199,9 +204,10 @@ export default function SafmedsTrials() {
     }
   }, [timeLeft, hasStarted, autoSaved, totalAnswers]);
 
-  /* SAVE RUN FIX */
+  /* SAVE RUN — now used by auto-save only */
   async function saveRun(auto = false) {
     if (!user) return;
+    if (saving) return; // avoid overlapping saves
 
     try {
       setSaving(true);
@@ -221,11 +227,11 @@ export default function SafmedsTrials() {
 
       const json = await res.json();
       if (!json.ok) {
-        if (!auto) setMessage(`Error saving run: ${json.error}`);
+        setMessage(`Error saving run: ${json.error}`);
         return;
       }
 
-      if (!auto) setMessage("Run saved ✅");
+      setMessage(auto ? "Run saved automatically ✅" : "Run saved ✅");
       loadTodayRuns(); // refresh today's summary
     } finally {
       setSaving(false);
@@ -236,24 +242,36 @@ export default function SafmedsTrials() {
   const advanceCard = () => {
     if (cards.length === 0) return;
     setCurrentIndex((prev) => (prev + 1) % cards.length);
-    setShowDefinition(false); // go back to term
+    setShowDefinition(false); // always show term first
   };
 
+  /* Mark Correct */
   const incrementCorrect = () => {
     if (!isRunning) return;
     setCorrect((c) => c + 1);
-    advanceCard();
-  };
-  const incrementIncorrect = () => {
-    if (!isRunning) return;
-    setIncorrect((c) => c + 1);
+    setLastMark("correct");
     advanceCard();
   };
 
+  /* Mark Incorrect */
+  const incrementIncorrect = () => {
+    if (!isRunning) return;
+    setIncorrect((c) => c + 1);
+    setLastMark("incorrect");
+    advanceCard();
+  };
+
+  /* Flip card */
   const handleCardClick = () => {
     if (!hasStarted) return;
     setShowDefinition((prev) => !prev);
   };
+
+  /* RESET color highlight when the next card loads */
+  useEffect(() => {
+    if (!isRunning) return;
+    setLastMark(null);
+  }, [currentIndex, isRunning]);
 
   const deckValue =
     selectedDeck && `${selectedDeck.class_code}::${selectedDeck.deck_number}`;
@@ -266,28 +284,56 @@ export default function SafmedsTrials() {
   const isFront = !showDefinition;
 
   /* =========================
-     Build today's chart data
+     Build today's chart + table data
+     - Graph and table use SAME ordered subset
   ========================== */
-  const sortedTodayRuns = [...todayRuns].sort((a, b) => {
-    const netA =
-      a.net_score != null ? a.net_score : a.correct - a.incorrect;
-    const netB =
-      b.net_score != null ? b.net_score : b.correct - b.incorrect;
-    return netB - netA; // best first
+
+  // 1️⃣ chronological list (by local_ts; fallback to id)
+  const chronoTodayRuns = [...todayRuns].sort((a, b) => {
+    if (a.local_ts && b.local_ts) {
+      const ta = new Date(a.local_ts).getTime();
+      const tb = new Date(b.local_ts).getTime();
+      if (ta !== tb) return ta - tb;
+    }
+    return a.id.localeCompare(b.id);
   });
 
-  const runsForGraph = showTop5
-    ? sortedTodayRuns.slice(0, 5)
-    : sortedTodayRuns;
+  // 2️⃣ compute net for each run
+  const withNet = chronoTodayRuns.map((r) => ({
+    ...r,
+    net:
+      r.net_score != null ? r.net_score : r.correct - r.incorrect,
+  }));
 
-  const todayChartData = runsForGraph.map((run, idx) => ({
+  // 3️⃣ decide which runs are in the graph/table
+  let runsForGraphAndTable = withNet;
+
+  if (showTop5) {
+    // pick best 5 by net...
+    const bestFiveIds = new Set(
+      [...withNet]
+        .sort((a, b) => (b.net ?? 0) - (a.net ?? 0))
+        .slice(0, 5)
+        .map((r) => r.id)
+    );
+    // ...but keep chronological order among those 5
+    runsForGraphAndTable = withNet.filter((r) =>
+      bestFiveIds.has(r.id)
+    );
+  }
+
+  // 4️⃣ graph data: simple mapping
+  const todayChartData = runsForGraphAndTable.map((run, idx) => ({
     trial_number: idx + 1,
-    net_score:
-      run.net_score != null ? run.net_score : run.correct - run.incorrect,
+    net_score: run.net,
     correct: run.correct,
     incorrect: run.incorrect,
   }));
 
+  // 5️⃣ table rows: same runs, same order as graph
+  const tableRuns = runsForGraphAndTable;
+
+  // Summary stats still use ALL runs
   const totalCorrectToday = todayRuns.reduce(
     (sum, r) => sum + r.correct,
     0
@@ -304,6 +350,26 @@ export default function SafmedsTrials() {
         })
       )
     : 0;
+
+  /* =========================
+     Button classes with visual feedback
+  ========================== */
+
+  const correctBtnClass =
+    "flex-1 rounded-md px-3 py-2 text-sm font-semibold disabled:opacity-40 " +
+    (isRunning
+      ? lastMark === "correct"
+        ? "border border-emerald-700 bg-emerald-600 text-white"
+        : "border border-emerald-400 text-emerald-700"
+      : "border border-emerald-200 text-emerald-300");
+
+  const incorrectBtnClass =
+    "flex-1 rounded-md px-3 py-2 text-sm font-semibold disabled:opacity-40 " +
+    (isRunning
+      ? lastMark === "incorrect"
+        ? "border border-red-700 bg-red-600 text-white"
+        : "border border-red-400 text-red-700"
+      : "border border-red-200 text-red-300");
 
   /* =========================
      RENDER
@@ -326,7 +392,7 @@ export default function SafmedsTrials() {
         </Link>
       </nav>
 
-      {/* ====== TIMING SECTION (unchanged) ====== */}
+      {/* ====== TIMING SECTION ====== */}
       <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         {/* Deck selector */}
         <div className="flex flex-col gap-2">
@@ -383,10 +449,18 @@ export default function SafmedsTrials() {
 
         {/* Timer */}
         <div className="flex items-center justify-between mt-2 text-sm">
-          <div>Time left: <span className="text-lg font-semibold">{timeLeft}s</span></div>
+          <div>
+            Time left:{" "}
+            <span className="text-lg font-semibold">{timeLeft}s</span>
+          </div>
           <div className="text-right">
-            <div>Correct: <span className="font-semibold">{correct}</span></div>
-            <div>Incorrect: <span className="font-semibold">{incorrect}</span></div>
+            <div>
+              Correct: <span className="font-semibold">{correct}</span>
+            </div>
+            <div>
+              Incorrect:{" "}
+              <span className="font-semibold">{incorrect}</span>
+            </div>
             <div className="text-xs text-slate-500">
               Accuracy: {accuracy === null ? "—" : `${accuracy}%`}
             </div>
@@ -396,7 +470,7 @@ export default function SafmedsTrials() {
         <div className="flex justify-end">
           <button
             onClick={() => {
-              // shuffle deck
+              // shuffle deck and start timing
               setCards([...cards].sort(() => Math.random() - 0.5));
               setCurrentIndex(0);
               setShowDefinition(false);
@@ -407,6 +481,7 @@ export default function SafmedsTrials() {
               setHasStarted(true);
               setMessage(null);
               setAutoSaved(false);
+              setLastMark(null); // reset visual marker on new run
             }}
             className="rounded-md border border-slate-300 px-3 py-1 text-sm"
           >
@@ -424,8 +499,8 @@ export default function SafmedsTrials() {
           ) : (
             <div className="space-y-2">
               <p className="text-xs text-slate-500">
-                {currentCard.class_code} — Deck {currentCard.deck_number} • Card{" "}
-                {currentIndex + 1} of {cards.length}
+                {currentCard.class_code} — Deck {currentCard.deck_number} •
+                Card {currentIndex + 1} of {cards.length}
               </p>
               <p className="text-xs text-slate-500">
                 {isFront ? "Term" : "Definition"}
@@ -442,32 +517,20 @@ export default function SafmedsTrials() {
           <button
             onClick={incrementCorrect}
             disabled={!isRunning}
-            className="flex-1 rounded-md border border-emerald-400 px-3 py-2 text-sm font-semibold text-emerald-700 disabled:opacity-40"
+            className={correctBtnClass}
           >
             + Correct
           </button>
           <button
             onClick={incrementIncorrect}
             disabled={!isRunning}
-            className="flex-1 rounded-md border border-red-400 px-3 py-2 text-sm font-semibold text-red-700 disabled:opacity-40"
+            className={incorrectBtnClass}
           >
             + Incorrect
           </button>
         </div>
 
-        {/* Manual save */}
-        <div className="flex items-center justify-between mt-3">
-          <button
-            onClick={() => saveRun(false)}
-            disabled={saving || totalAnswers === 0}
-            className="rounded-md border border-slate-300 px-3 py-1 text-sm disabled:opacity-40"
-          >
-            {saving ? "Saving…" : "Save run"}
-          </button>
-          <div className="text-xs text-slate-500">
-            Saves via /api/safmeds/run
-          </div>
-        </div>
+        {/* No manual Save Run button anymore — auto-save handles it */}
 
         {message && <div className="text-xs mt-2">{message}</div>}
       </div>
@@ -488,7 +551,9 @@ export default function SafmedsTrials() {
         </div>
 
         {loadingToday && (
-          <p className="text-sm text-slate-500">Loading today&apos;s data…</p>
+          <p className="text-sm text-slate-500">
+            Loading today&apos;s data…
+          </p>
         )}
         {todayError && (
           <p className="text-sm text-red-600">{todayError}</p>
@@ -503,10 +568,22 @@ export default function SafmedsTrials() {
         {!loadingToday && !todayError && todayRuns.length > 0 && (
           <div className="space-y-4">
             <p className="text-xs text-slate-700">
-              Runs today: <span className="font-semibold">{todayRuns.length}</span> ·
-              Total correct: <span className="font-semibold">{totalCorrectToday}</span> ·
-              Total incorrect: <span className="font-semibold">{totalIncorrectToday}</span> ·
-              Best accuracy: <span className="font-semibold">{bestAccuracyToday.toFixed(1)}%</span>
+              Runs today:{" "}
+              <span className="font-semibold">
+                {todayRuns.length}
+              </span>{" "}
+              · Total correct:{" "}
+              <span className="font-semibold">
+                {totalCorrectToday}
+              </span>{" "}
+              · Total incorrect:{" "}
+              <span className="font-semibold">
+                {totalIncorrectToday}
+              </span>{" "}
+              · Best accuracy:{" "}
+              <span className="font-semibold">
+                {bestAccuracyToday.toFixed(1)}%
+              </span>
             </p>
 
             {/* Graph */}
@@ -518,14 +595,22 @@ export default function SafmedsTrials() {
                     dataKey="trial_number"
                     label={{
                       value: showTop5
-                        ? "Run (best to 5th best)"
-                        : "Run (best to worst)",
+                        ? "Best 5 runs (in order completed)"
+                        : "All runs (in order completed)",
                       position: "insideBottom",
                       offset: -5,
                     }}
                   />
                   <YAxis />
-                  <Tooltip />
+                  <Tooltip
+                    formatter={(value: any, name: any) => {
+                      if (name === "net_score") return [value, "Net"];
+                      if (name === "correct") return [value, "✓"];
+                      if (name === "incorrect") return [value, "✕"];
+                      return [value, name];
+                    }}
+                    labelFormatter={(label) => `Run #${label}`}
+                  />
                   <Line
                     type="linear"
                     dataKey="net_score"
@@ -536,45 +621,38 @@ export default function SafmedsTrials() {
               </ResponsiveContainer>
             </div>
 
-            {/* Data table */}
+            {/* Data table — same subset & order as graph */}
             <div className="border rounded-xl bg-white shadow-sm overflow-x-auto">
               <table className="min-w-full text-xs">
                 <thead>
                   <tr className="border-b">
-                    <th className="py-1 px-1 text-left">Run</th>
+                    <th className="py-1 px-1 text-left">Run #</th>
                     <th className="py-1 px-1 text-right">Correct</th>
                     <th className="py-1 px-1 text-right">Incorrect</th>
                     <th className="py-1 px-1 text-right">Net</th>
                     <th className="py-1 px-1 text-right">Duration</th>
                     <th className="py-1 px-1 text-left">Deck</th>
-                    <th className="py-1 px-1 text-left">Notes</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedTodayRuns.map((run, idx) => {
-                    const net =
-                      run.net_score != null
-                        ? run.net_score
-                        : run.correct - run.incorrect;
-
-                    return (
-                      <tr key={run.id} className="border-b">
-                        <td className="py-1 px-1">{idx + 1}</td>
-                        <td className="py-1 px-1 text-right">
-                          {run.correct}
-                        </td>
-                        <td className="py-1 px-1 text-right">
-                          {run.incorrect}
-                        </td>
-                        <td className="py-1 px-1 text-right">{net}</td>
-                        <td className="py-1 px-1 text-right">
-                          {run.duration_seconds}
-                        </td>
-                        <td className="py-1 px-1">{run.deck ?? ""}</td>
-                        <td className="py-1 px-1">{run.notes ?? ""}</td>
-                      </tr>
-                    );
-                  })}
+                  {tableRuns.map((run, idx) => (
+                    <tr key={run.id} className="border-b">
+                      <td className="py-1 px-1">{idx + 1}</td>
+                      <td className="py-1 px-1 text-right">
+                        {run.correct}
+                      </td>
+                      <td className="py-1 px-1 text-right">
+                        {run.incorrect}
+                      </td>
+                      <td className="py-1 px-1 text-right">
+                        {run.net}
+                      </td>
+                      <td className="py-1 px-1 text-right">
+                        {run.duration_seconds}
+                      </td>
+                      <td className="py-1 px-1">{run.deck ?? ""}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>

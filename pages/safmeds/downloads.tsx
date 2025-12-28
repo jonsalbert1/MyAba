@@ -1,38 +1,27 @@
 // pages/safmeds/downloads.tsx
-import Link from "next/link";
+import SafmedsWeek from "./week";
 
-export default function SafmedsDownloads() {
+/**
+ * SAFMEDS Weekly Report (Read-only)
+ * This page simply mirrors the last 7 days view.
+ * PDF exporting is done from the main SAFMEDS Week page.
+ */
+export default function SafmedsDownloadsPage() {
   return (
-    <div className="max-w-xl mx-auto px-4 py-8 space-y-6">
-      <header className="space-y-2">
-        <h1 className="text-2xl font-bold">SAFMEDS Downloads & Reports</h1>
+    <main className="mx-auto max-w-5xl px-4 py-8">
+      <header className="mb-4 space-y-1">
+        <h1 className="text-3xl font-bold">SAFMEDS Weekly Report</h1>
         <p className="text-sm text-slate-600">
-          Access weekly graphs and data exports.
+          This view mirrors your last 7 days of SAFMEDS activity.
+          <br />
+          To download a PDF, use the link on the main SAFMEDS Week page.
         </p>
       </header>
 
-      <nav className="flex flex-wrap gap-3 text-sm">
-        <Link href="/safmeds" className="underline text-slate-600">
-          ← Back to SAFMEDS Home
-        </Link>
-        <Link href="/safmeds/trials" className="underline text-slate-600">
-          Go to Timings
-        </Link>
-      </nav>
-
-      <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <h2 className="text-sm font-semibold text-slate-700">
-          Available reports
-        </h2>
-        <ul className="list-disc pl-5 text-sm space-y-2">
-          <li>
-            <Link href="/safmeds/week" className="text-blue-600 underline">
-              Weekly SAFMEDS graphs & PDF export
-            </Link>
-          </li>
-          {/* Add future CSV/PDF API links here */}
-        </ul>
-      </div>
-    </div>
+      {/* Simply render the weekly view */}
+      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <SafmedsWeek />
+      </section>
+    </main>
   );
 }

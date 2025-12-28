@@ -6,181 +6,318 @@ import { getDomainTitle, getSubdomainText } from "@/lib/tco";
 
 type ProgressRow = {
   domain: string;
-  subdomain: string;
+  subdomain: string; // may be "A01" or "A1"
   best_accuracy_percent: number | null;
 };
+
+type SubRow = {
+  code: string; // "A01"
+  title: string;
+  done: boolean;
+  bestAccuracy: number | null;
+  hasLive: boolean;
+  lastUpdated: number | null;
+};
+
+const DOMAIN_COUNTS: Record<string, number> = {
+  A: 5,
+  B: 24,
+  C: 12,
+  D: 9,
+  E: 12,
+  F: 8,
+  G: 19,
+  H: 8,
+  I: 7,
+};
+
+// Normalize "A1" -> "A01", "b9" -> "B09"
+function normalizeSubCode(raw: string): string {
+  if (!raw) return raw;
+  const m = raw.match(/^([A-Ia-i])(\d{1,2})$/);
+  if (!m) return raw.toUpperCase();
+  const letter = m[1].toUpperCase();
+  const num = m[2].padStart(2, "0");
+  return `${letter}${num}`;
+}
 
 export default function DomainPage() {
   const router = useRouter();
   const supabase = useSupabaseClient();
   const user = useUser();
 
-  const domain = (router.query.domain as string | undefined)?.toUpperCase() ?? "";
-  const [rows, setRows] = useState<ProgressRow[]>([]);
+  const domainParam =
+    (router.query.domain as string | undefined)?.toUpperCase() ?? "";
+  const domain = domainParam || "";
+
+  const [rows, setRows] = useState<SubRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
 
-  // Domain counts for layout
-  const DOMAIN_COUNTS: Record<string, number> = {
-    A: 5, B: 24, C: 12, D: 9, E: 12,
-    F: 8, G: 19, H: 8, I: 7,
+  const totalSubs = DOMAIN_COUNTS[domain] ?? 0;
+  const domainTitle = domain
+    ? getDomainTitle(domain) ?? `Domain ${domain}`
+    : "";
+
+  // Build base rows for that domain
+  const buildBaseRows = (): SubRow[] => {
+    const count = DOMAIN_COUNTS[domain] ?? 0;
+    const list: SubRow[] = [];
+    for (let i = 1; i <= count; i++) {
+      const code = `${domain}${String(i).padStart(2, "0")}`;
+      list.push({
+        code,
+        title: getSubdomainText(code) ?? code,
+        done: false,
+        bestAccuracy: null,
+        hasLive: false,
+        lastUpdated: null,
+      });
+    }
+    return list;
   };
 
-  const subCount = DOMAIN_COUNTS[domain] ?? 0;
+  const loadDomain = async () => {
+    if (!user || !domain || !DOMAIN_COUNTS[domain]) {
+      setRows([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setMsg(null);
+
+    try {
+      // 1) Start with base rows
+      const base = buildBaseRows();
+
+      // 2) Supabase completion rows for this domain
+      const { data, error } = await supabase
+        .from("quiz_subdomain_progress")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("domain", domain);
+
+      if (error) {
+        console.error("quiz_subdomain_progress domain error", error);
+        setMsg(error.message ?? "Error loading domain progress.");
+      } else {
+        const progressRows = (data ?? []) as ProgressRow[];
+
+        progressRows.forEach((row) => {
+          const code = normalizeSubCode(row.subdomain);
+          const sub = base.find((s) => s.code === code);
+          if (!sub) return;
+          if (row.best_accuracy_percent != null) {
+            sub.done = true;
+            sub.bestAccuracy = row.best_accuracy_percent;
+          }
+        });
+      }
+
+      // 3) Overlay local in-progress state (quiz:live)
+      if (typeof window !== "undefined") {
+        try {
+          base.forEach((sub) => {
+            const liveKey = `quiz:live:${domain}:${sub.code}`;
+            const raw = window.localStorage.getItem(liveKey);
+            if (!raw) return;
+
+            try {
+              const parsed = JSON.parse(raw);
+              if (
+                typeof parsed?.answeredCount === "number" &&
+                parsed.answeredCount > 0
+              ) {
+                sub.hasLive = true;
+                sub.lastUpdated =
+                  typeof parsed.lastUpdated === "number"
+                    ? parsed.lastUpdated
+                    : null;
+              }
+            } catch {
+              // ignore bad JSON
+            }
+          });
+        } catch {
+          // localStorage blocked
+        }
+      }
+
+      setRows(base);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    if (!router.isReady || !user || !domain) return;
+    loadDomain();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, domain]);
 
-    const load = async () => {
-      setLoading(true);
-      try {
-        const { data, error } = await supabase
-          .from("quiz_subdomain_progress")
-          .select("*")
-          .eq("domain", domain)
-          .eq("user_id", user.id);
+  const handleOpenSubdomain = (code: string, fresh: boolean) => {
+    const query: Record<string, string> = { code };
+    if (fresh) {
+      query.fresh = "1";
+    }
+    router.push({
+      pathname: "/quiz/runner",
+      query,
+    });
+  };
 
-        if (error) {
-          setMsg(error.message);
-          setLoading(false);
-          return;
-        }
+  const handleResetDomain = async () => {
+    if (!user || !domain) return;
 
-        setRows((data as any[]) ?? []);
-        setMsg(null);
-        setLoading(false);
-      } catch (e: any) {
-        setMsg(e?.message ?? "Unexpected error");
-        setLoading(false);
+    if (
+      !window.confirm(
+        `This will clear all saved quiz attempts and best scores for Domain ${domain} on your account. Continue?`
+      )
+    ) {
+      return;
+    }
+
+    setResetting(true);
+    try {
+      // ✅ Use server-side reset (avoids RLS issues)
+      const resp = await fetch("/api/quiz/reset-domain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domain }),
+      });
+
+      const body = await resp.json().catch(() => null);
+
+      if (!resp.ok || !body?.ok) {
+        console.error("reset-domain failed:", resp.status, resp.statusText, body);
+        alert(body?.error || "Reset failed. See console for details.");
+        return;
       }
-    };
 
-    load();
-  }, [router.isReady, user, domain, supabase]);
+      // 2) Clear localStorage keys for this domain
+      if (typeof window !== "undefined") {
+        const keysToRemove: string[] = [];
+        Object.keys(window.localStorage).forEach((key) => {
+          if (
+            key.startsWith(`quiz:live:${domain}:`) ||
+            key.startsWith(`quiz:done:${domain}:`) ||
+            key.startsWith(`quiz:accuracy:${domain}:`)
+          ) {
+            keysToRemove.push(key);
+          }
+        });
+        keysToRemove.forEach((k) => window.localStorage.removeItem(k));
+      }
 
-  const handleStart = (subCode: string) => {
-    router.push(`/quiz/runner?code=${subCode}&fresh=1`);
+      // 3) Reload domain rows
+      await loadDomain();
+    } finally {
+      setResetting(false);
+    }
   };
 
-  const handleResume = (subCode: string) => {
-    router.push(`/quiz/runner?code=${subCode}&resume=1`);
-  };
-
-  // Get accuracy from row list
-  const getAccuracy = (code: string) => {
-    return rows.find((r) => r.subdomain === code)?.best_accuracy_percent ?? null;
-  };
+  const completedCount = rows.filter((r) => r.done).length;
+  const nextCode = rows.find((r) => !r.done)?.code ?? null;
 
   return (
-    <main className="mx-auto max-w-3xl p-6">
-      {/* HEADER */}
-      <header className="mb-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">
-            Domain {domain}: {getDomainTitle(domain)}
-          </h1>
-          <p className="text-sm text-zinc-600 mt-1">
-            {subCount} total subdomains
-          </p>
-        </div>
+    <main className="mx-auto max-w-4xl px-4 py-6 space-y-4">
+      {/* Top bar */}
+      <header className="flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => router.push("/quiz")}
+          className="rounded-md border border-gray-300 px-3 py-1.5 text-xs hover:bg-gray-50"
+        >
+          ← Back to Quiz Home
+        </button>
 
         <button
-          onClick={() => router.push("/quiz")}
-          className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs hover:bg-zinc-50"
+          type="button"
+          onClick={handleResetDomain}
+          disabled={resetting}
+          className="rounded-md border border-red-300 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
         >
-          ← Back to Full TOC
+          {resetting ? "Resetting…" : `Reset Domain ${domain}`}
         </button>
       </header>
 
-      {/* LOADING + ERROR */}
+      {/* Domain header */}
+      <section className="space-y-1">
+        <h1 className="text-3xl font-bold tracking-tight">
+          Domain {domain}: {domainTitle}
+        </h1>
+        <p className="text-sm text-gray-600">
+          {totalSubs} total subdomains · Completed: {completedCount}/{totalSubs}
+        </p>
+        {nextCode && (
+          <p className="text-xs text-gray-500">
+            Next unfinished subdomain:{" "}
+            <span className="font-semibold">{nextCode}</span> —{" "}
+            {getSubdomainText(nextCode)}
+          </p>
+        )}
+      </section>
+
       {loading && (
-        <p className="text-sm text-zinc-600">Loading domain progress…</p>
+        <p className="text-sm text-gray-600">
+          {msg ?? "Loading domain progress…"}
+        </p>
       )}
 
-      {!loading && msg && (
-        <p className="text-sm text-red-600">{msg}</p>
-      )}
+      {!loading && msg && <p className="text-sm text-red-600">{msg}</p>}
 
-      {!loading && !msg && (
-        <section className="space-y-4">
-          {/* GRID OF SUBDOMAINS */}
-          {Array.from({ length: subCount }).map((_, i) => {
-            const num = i + 1;
-            const subCode = `${domain}${String(num).padStart(2, "0")}`;
-            const acc = getAccuracy(subCode);
+      {/* Subdomain list */}
+      <section className="space-y-3">
+        {rows.map((sub) => {
+          const statusLabel = sub.hasLive
+            ? "In progress"
+            : sub.done
+            ? "Completed"
+            : "Not started yet";
 
-            // 🔑 Use the full code only, and guard the dash
-            const label = getSubdomainText(subCode) ?? "";
+          const bestText =
+            sub.bestAccuracy != null ? `${sub.bestAccuracy.toFixed(0)}%` : "—";
 
-            return (
-              <div
-                key={subCode}
-                className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm"
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="font-semibold text-sm">
-                      {subCode}
-                      {label && (
-                        <>
-                          {" — "}
-                          {label}
-                        </>
-                      )}
-                    </h2>
-                    <p className="text-xs text-zinc-500 mt-1">
-                      {acc !== null ? (
-                        <>
-                          Best Accuracy: <strong>{acc}%</strong>
-                        </>
-                      ) : (
-                        <>No attempts yet</>
-                      )}
-                    </p>
-                  </div>
+          const buttonLabel = sub.hasLive
+            ? `Continue ${sub.code}`
+            : sub.done
+            ? `Retake ${sub.code}`
+            : `Start ${sub.code}`;
 
-                  {/* ACTION BUTTONS */}
-                  <div className="flex flex-col gap-1">
-                    {acc !== null ? (
-                      <>
-                        <button
-                          onClick={() => handleResume(subCode)}
-                          className="rounded-md bg-blue-600 text-white text-xs px-3 py-1 hover:bg-blue-700"
-                        >
-                          Continue
-                        </button>
-                        <button
-                          onClick={() => handleStart(subCode)}
-                          className="rounded-md border border-zinc-300 text-xs px-3 py-1 hover:bg-zinc-50"
-                        >
-                          Retake
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        onClick={() => handleStart(subCode)}
-                        className="rounded-md bg-green-600 text-white text-xs px-3 py-1 hover:bg-green-700"
-                      >
-                        Start
-                      </button>
-                    )}
-                  </div>
-                </div>
+          const fresh = !sub.hasLive; // if we have live data, continue; otherwise start fresh
 
-                {/* mini progress bar */}
-                {acc !== null && (
-                  <div className="mt-3 h-2 w-full bg-zinc-200 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-green-500"
-                      style={{ width: `${acc}%` }}
-                    ></div>
-                  </div>
-                )}
+          return (
+            <div
+              key={sub.code}
+              className="flex items-center justify-between rounded-xl border bg-white p-4 shadow-sm"
+            >
+              <div>
+                <p className="text-sm font-semibold">
+                  {sub.code} — {sub.title}
+                </p>
+                <p className="mt-1 text-xs text-gray-600">
+                  {statusLabel} · Best: {bestText}
+                </p>
               </div>
-            );
-          })}
-        </section>
-      )}
+
+              <button
+                type="button"
+                onClick={() => handleOpenSubdomain(sub.code, fresh)}
+                className="rounded-md bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700"
+              >
+                {buttonLabel}
+              </button>
+            </div>
+          );
+        })}
+
+        {!loading && rows.length === 0 && (
+          <p className="text-sm text-gray-600">
+            No subdomains configured for this domain.
+          </p>
+        )}
+      </section>
     </main>
   );
 }

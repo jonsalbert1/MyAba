@@ -9,6 +9,7 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import dynamic from "next/dynamic";
 import "@/styles/globals.css";
+import FeedbackModal from "@/components/FeedbackModal";
 
 // Dynamic bits
 const EnvRibbon = dynamic(() => import("@/components/EnvRibbon"), {
@@ -58,6 +59,14 @@ export default function App({
   // ✅ Single browser Supabase client (used by SessionContextProvider)
   const [supabaseClient] = useState(() => createPagesBrowserClient());
 
+  // Walkthrough modal state
+  const [showTour, setShowTour] = useState(false);
+
+  // Feedback modal state
+  const [showFeedback, setShowFeedback] = useState(false);
+
+  const year = new Date().getFullYear();
+
   // Close mobile drawer on route change
   useEffect(() => {
     const handleRoute = () => setOpen(false);
@@ -92,6 +101,22 @@ export default function App({
     { href: "/safmeds", label: "SAFMEDS" },
     { href: "/quiz", label: "Quiz" }, // TOC / main quiz hub
   ];
+
+  // 🌟 Show guided tour once per browser (can be reopened from footer)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const seen = window.localStorage.getItem("myaba_tour_seen");
+    if (!seen) {
+      setShowTour(true);
+    }
+  }, []);
+
+  const handleCloseTour = () => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("myaba_tour_seen", "1");
+    }
+    setShowTour(false);
+  };
 
   return (
     <SessionContextProvider
@@ -175,6 +200,113 @@ export default function App({
       <div className="mx-auto max-w-6xl px-4 py-4">
         <Component {...pageProps} />
       </div>
+
+      {/* Global footer */}
+      <footer className="mt-8">
+        <hr className="border-t border-black" />
+        <div className="mx-auto flex max-w-6xl flex-col items-center gap-2 px-4 py-4 text-center sm:flex-row sm:justify-between">
+          <Link
+            href="https://myaba.app"
+            className="text-lg font-semibold text-black hover:underline"
+          >
+            © {year} myABA.app
+          </Link>
+
+          <div className="flex flex-wrap items-center justify-center gap-4 text-sm">
+            <button
+              type="button"
+              onClick={() => setShowTour(true)}
+              className="underline-offset-2 hover:underline"
+            >
+              View walkthrough
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowFeedback(true)}
+              className="underline-offset-2 hover:underline"
+            >
+              Send feedback
+            </button>
+          </div>
+        </div>
+      </footer>
+
+      {/* Guided in-app walkthrough modal */}
+      {showTour && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl">
+            <div className="mb-3 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-semibold">
+                  Welcome to myABA.app Study Suite
+                </h2>
+                <p className="mt-1 text-sm text-gray-600">
+                  Here&apos;s a quick walkthrough of how to use the app for
+                  weekly study and reports.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseTour}
+                className="text-gray-400 hover:text-gray-600"
+                aria-label="Close walkthrough"
+              >
+                ✕
+              </button>
+            </div>
+
+            <ol className="list-decimal space-y-2 pl-5 text-sm text-gray-800">
+              <li>
+                <span className="font-semibold">Sign up / Sign in:</span> Use
+                your email to log in. You&apos;ll get a magic link to confirm
+                your account.
+              </li>
+              <li>
+                <span className="font-semibold">Flashcards:</span> Go to{" "}
+                <span className="font-mono">Flashcards</span> to run quick
+                term–definition practice from your current decks.
+              </li>
+              <li>
+                <span className="font-semibold">SAFMEDS:</span> Use{" "}
+                <span className="font-mono">SAFMEDS</span> for 1-minute fluency
+                timings. Your best run per day is saved for weekly reports.
+              </li>
+              <li>
+                <span className="font-semibold">Quiz:</span> Open{" "}
+                <span className="font-mono">Quiz</span> to work through BCBA
+                6th Task List domains and track your best accuracy by subdomain.
+              </li>
+              <li>
+                <span className="font-semibold">Weekly reports:</span> The{" "}
+                <span className="font-mono">SAFMEDS</span> week view and quiz
+                dashboard summarize your progress for class assignments and
+                self-management.
+              </li>
+              <li>
+                <span className="font-semibold">Need help?</span> Use{" "}
+                <span className="font-mono">Send feedback</span> in the footer
+                to report issues or request features.
+              </li>
+            </ol>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleCloseTour}
+                className="rounded-md border border-gray-300 px-4 py-1.5 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Feedback modal */}
+      <FeedbackModal
+        open={showFeedback}
+        onClose={() => setShowFeedback(false)}
+      />
     </SessionContextProvider>
   );
 }

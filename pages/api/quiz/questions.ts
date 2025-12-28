@@ -21,7 +21,7 @@ export default async function handler(req: any, res: any) {
     const isValid = /^[A-I][0-9]{1,2}$/.test(sub);
     if (!isValid) {
       // List available subdomains (best-effort)
-      const avail = await supabase.from("quiz_questions").select("subdomain").limit(200);
+      const avail = await supabase.from("quiz_questions_v2").select("subdomain").limit(200);
       const options = Array.from(
         new Set((avail.data || []).map((r: any) => String(r.subdomain || "").toUpperCase()).filter(Boolean))
       ).sort();
@@ -35,7 +35,7 @@ export default async function handler(req: any, res: any) {
 
     // Select everything to avoid unknown-column errors; normalize below.
     const { data, error } = await supabase
-      .from("quiz_questions")
+      .from("quiz_questions_v2")
       .select("*")
       .eq("subdomain", sub)
       .limit(limit);

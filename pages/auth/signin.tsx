@@ -7,7 +7,7 @@ export default function LegacySignInAlias() {
 
   useEffect(() => {
     // Preserve ?next=... if present
-    const { next, ...rest } = router.query;
+    const { next } = router.query;
     const nextParam = typeof next === "string" ? next : undefined;
 
     const search = new URLSearchParams();

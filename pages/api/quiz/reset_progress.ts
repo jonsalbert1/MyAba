@@ -1,11 +1,9 @@
 // pages/api/quiz/reset-progress.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createPagesServerClient } from "@supabase/auth-helpers-nextjs";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-export default async function handler(
-  req: NextApiRequest,
-  res: NextApiResponse
-) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   res.setHeader("Cache-Control", "no-store");
 
   if (req.method !== "POST") {
@@ -28,17 +26,30 @@ export default async function handler(
       return res.status(401).json({ ok: false, error: "Not authenticated" });
     }
 
-    // 🔥 Delete all rows for this user
-    const { error: delErr } = await supabase
+    // ✅ Clear per-subdomain progress (all domains)
+    const { error: delProgressErr } = await supabaseAdmin
       .from("quiz_subdomain_progress")
       .delete()
       .eq("user_id", user.id);
 
-    if (delErr) {
-      console.error("quiz/reset-progress delete error", delErr);
+    if (delProgressErr) {
+      console.error("quiz/reset-progress delete progress error", delProgressErr);
       return res
         .status(500)
         .json({ ok: false, error: "Failed to clear quiz progress" });
+    }
+
+    // ✅ Also clear attempts (prevents stale in_progress attempts from breaking runner)
+    const { error: delAttemptsErr } = await supabaseAdmin
+      .from("quiz_attempts")
+      .delete()
+      .eq("user_id", user.id);
+
+    if (delAttemptsErr) {
+      console.error("quiz/reset-progress delete attempts error", delAttemptsErr);
+      return res
+        .status(500)
+        .json({ ok: false, error: "Failed to clear quiz attempts" });
     }
 
     return res.status(200).json({ ok: true });

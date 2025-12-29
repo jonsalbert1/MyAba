@@ -4,35 +4,28 @@ import Link from "next/link";
 import { useSupabaseClient, useUser } from "@supabase/auth-helpers-react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-// Optional: strongly type the profile row
+// Strongly type the profile row
 type ProfileRow = {
   first_name: string | null;
+  is_admin: boolean | null;
 };
-
-const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS ?? "")
-  .split(",")
-  .map((e) => e.trim().toLowerCase())
-  .filter(Boolean);
-
-function isAdminEmail(email: string | null | undefined) {
-  if (!email) return false;
-  return ADMIN_EMAILS.includes(email.toLowerCase());
-}
 
 export default function UserMenu() {
   const supabase = useSupabaseClient<SupabaseClient>();
   const user = useUser();
 
   const [firstName, setFirstName] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [loadingProfile, setLoadingProfile] = useState(false);
 
-  // Load first_name from profiles when we have a user
+  // Load first_name + is_admin from profiles when we have a user
   useEffect(() => {
     let cancelled = false;
 
     async function loadProfile() {
       if (!user) {
         setFirstName(null);
+        setIsAdmin(false);
         return;
       }
 
@@ -40,7 +33,7 @@ export default function UserMenu() {
 
       const { data, error } = await supabase
         .from("profiles")
-        .select("first_name")
+        .select("first_name,is_admin")
         .eq("id", user.id)
         .maybeSingle();
 
@@ -52,6 +45,7 @@ export default function UserMenu() {
 
       const row = (data as ProfileRow | null) ?? null;
       setFirstName(row?.first_name ?? null);
+      setIsAdmin(Boolean(row?.is_admin));
       setLoadingProfile(false);
     }
 
@@ -66,8 +60,6 @@ export default function UserMenu() {
     firstName && firstName.trim().length > 0
       ? `Hi, ${firstName.trim()}`
       : user?.email ?? null;
-
-  const admin = isAdminEmail(user?.email);
 
   async function handleSignOut() {
     await supabase.auth.signOut();
@@ -97,7 +89,7 @@ export default function UserMenu() {
   // Signed IN
   return (
     <div className="flex items-center gap-3 text-sm">
-      {admin && (
+      {isAdmin && (
         <Link
           href="/admin"
           className="rounded-md border border-blue-500 px-2 py-0.5 text-xs font-semibold text-blue-700"

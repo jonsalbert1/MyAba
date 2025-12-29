@@ -1,11 +1,11 @@
 // components/TopNav.tsx
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabaseClient";
-import type { User } from "@supabase/supabase-js";
+import { useEffect, useMemo, useState } from "react";
+import { useSupabaseClient, useUser } from "@supabase/auth-helpers-react";
 
 // ----------------------
-// ADMIN EMAILS
+// ADMIN EMAILS (comma-separated)
+// NEXT_PUBLIC_ADMIN_EMAILS="a@b.com,c@d.com"
 // ----------------------
 const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS ?? "")
   .split(",")
@@ -18,77 +18,45 @@ function isAdminEmail(email: string | null) {
 }
 
 export default function TopNav() {
-  // user === undefined -> still checking
-  // user === null      -> definitely signed out
-  // user (object)      -> signed in
-  const [user, setUser] = useState<User | null | undefined>(undefined);
+  const supabase = useSupabaseClient();
+  const user = useUser(); // null if signed out, object if signed in
+
   const [firstName, setFirstName] = useState<string | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
 
-    async function bootstrap() {
-      // 🔹 this is the same call that worked on /auth/profile
-      const { data, error } = await supabase.auth.getUser();
+    async function loadProfile() {
+      if (!user) {
+        setFirstName(null);
+        return;
+      }
+
+      setLoadingProfile(true);
+
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("first_name")
+        .eq("id", user.id)
+        .maybeSingle();
+
       if (cancelled) return;
 
       if (error) {
-        console.error("TopNav getUser error", error);
+        console.error("TopNav profile load error", error);
       }
 
-      const u = data.user ?? null;
-      setUser(u);
-
-      if (u) {
-        const { data: p, error: pErr } = await supabase
-          .from("profiles")
-          .select("first_name")
-          .eq("id", u.id)
-          .maybeSingle();
-
-        if (pErr) {
-          console.error("TopNav profile load error", pErr);
-        }
-
-        if (!cancelled) {
-          const profile = p as { first_name?: string | null } | null;
-          setFirstName(profile?.first_name ?? null);
-        }
-      }
+      setFirstName((data as any)?.first_name ?? null);
+      setLoadingProfile(false);
     }
 
-    bootstrap();
-
-    // 🔹 Listen for login / logout changes
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      const u = session?.user ?? null;
-      setUser(u);
-
-      if (u) {
-        supabase
-          .from("profiles")
-          .select("first_name")
-          .eq("id", u.id)
-          .maybeSingle()
-          .then(({ data, error }) => {
-            if (error) {
-              console.error("TopNav profile load error (change)", error);
-            }
-            const profile = data as { first_name?: string | null } | null;
-            setFirstName(profile?.first_name ?? null);
-          });
-      } else {
-        setFirstName(null);
-      }
-    });
+    loadProfile();
 
     return () => {
       cancelled = true;
-      subscription.unsubscribe();
     };
-  }, []);
+  }, [user?.id, supabase]);
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -98,11 +66,9 @@ export default function TopNav() {
   const displayName =
     firstName && firstName.trim().length > 0
       ? `Hi, ${firstName.trim()}`
-      : user
-      ? user.email
-      : null;
+      : user?.email ?? null;
 
-  const isAdmin = isAdminEmail(user?.email ?? null);
+  const isAdmin = useMemo(() => isAdminEmail(user?.email ?? null), [user?.email]);
 
   return (
     <header className="sticky top-0 z-20 border-b bg-white/70 backdrop-blur">
@@ -129,11 +95,18 @@ export default function TopNav() {
             </Link>
           )}
 
-          {user === undefined ? (
-            <span className="text-sm text-gray-600">Loading…</span>
-          ) : user ? (
+          {!user ? (
+            <Link
+              href="/login"
+              className="rounded-md border px-3 py-1 text-sm flex items-center"
+            >
+              Sign in
+            </Link>
+          ) : (
             <>
-              <span className="text-sm text-gray-700">{displayName}</span>
+              <span className="text-sm text-gray-700">
+                {loadingProfile ? "Loading…" : displayName}
+              </span>
               <button
                 onClick={signOut}
                 className="rounded-md border px-3 py-1 text-sm"
@@ -141,13 +114,6 @@ export default function TopNav() {
                 Sign out
               </button>
             </>
-          ) : (
-            <Link
-              href="/login"
-              className="rounded-md border px-3 py-1 text-sm flex items-center"
-            >
-              Sign in
-            </Link>
           )}
         </div>
       </nav>

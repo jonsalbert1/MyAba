@@ -17,6 +17,27 @@ export default function Home() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [needsProfile, setNeedsProfile] = useState(false);
 
+  // 🔐 SEATBELT: Forward magic-link callbacks that land on "/"
+  useEffect(() => {
+    if (!router.isReady) return;
+
+    const code = router.query.code;
+    if (typeof code === "string") {
+      const redirectedFrom =
+        typeof router.query.redirectedFrom === "string" &&
+        router.query.redirectedFrom.startsWith("/")
+          ? router.query.redirectedFrom
+          : "/";
+
+      router.replace(
+        `/auth/callback?code=${encodeURIComponent(code)}&redirectedFrom=${encodeURIComponent(
+          redirectedFrom
+        )}`
+      );
+    }
+  }, [router.isReady, router.query.code, router.query.redirectedFrom, router]);
+
+  // 🔄 Load user + profile
   useEffect(() => {
     let cancelled = false;
 
@@ -98,7 +119,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* Main tiles */}
         <div className="grid gap-6 md:grid-cols-3">
           <Link
             href="/flashcards"

@@ -3,46 +3,69 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { createMiddlewareClient } from "@supabase/auth-helpers-nextjs";
 
+function fullPath(req: NextRequest) {
+  return req.nextUrl.pathname + (req.nextUrl.search || "");
+}
+
 export async function middleware(req: NextRequest) {
   const res = NextResponse.next();
-  const url = req.nextUrl;
+  const pathname = req.nextUrl.pathname;
 
-  // Routes that middleware should IGNORE / always allow
-  const publicPaths = ["/", "/login", "/auth/callback"];
-  const isPublic = publicPaths.some((path) => url.pathname === path);
-
-  if (isPublic) {
-    return res;
+  // ✅ IMPORTANT: handle misplaced code redirects
+  const code = req.nextUrl.searchParams.get("code");
+  if (code && pathname !== "/auth/callback") {
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.pathname = "/auth/callback";
+    redirectUrl.searchParams.set("code", code);
+    redirectUrl.searchParams.set("redirectedFrom", pathname);
+    return NextResponse.redirect(redirectUrl);
   }
 
-  // Create Supabase client bound to this request/response
+  const publicPaths = ["/login", "/auth/callback", "/auth/profile", "/auth/finish"];
+  const isPublic = publicPaths.some((p) => pathname === p);
+  if (isPublic) return res;
+
   const supabase = createMiddlewareClient({ req, res });
   const {
     data: { session },
   } = await supabase.auth.getSession();
 
-  // If no session and trying to access a protected route, go to /login
   if (!session) {
     const redirectUrl = req.nextUrl.clone();
     redirectUrl.pathname = "/login";
-    redirectUrl.searchParams.set("redirectedFrom", req.nextUrl.pathname);
+    redirectUrl.searchParams.set("redirectedFrom", fullPath(req));
     return NextResponse.redirect(redirectUrl);
   }
 
-  // If already logged in and hitting /login, bounce home (optional)
-  if (session && url.pathname === "/login") {
-    url.pathname = "/";
-    return NextResponse.redirect(url);
+  const userId = session.user.id;
+
+  const { data: profile, error } = await supabase
+    .from("profiles")
+    .select("first_name,last_name")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("middleware profile check error:", error);
+    return res;
+  }
+
+  const first = (profile?.first_name ?? "").trim();
+  const last = (profile?.last_name ?? "").trim();
+  const incomplete = !first || !last;
+
+  if (incomplete && pathname !== "/auth/profile") {
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.pathname = "/auth/profile";
+    redirectUrl.searchParams.set("redirectedFrom", fullPath(req));
+    return NextResponse.redirect(redirectUrl);
   }
 
   return res;
 }
 
-// Only protect specific paths – NOT /auth/*
 export const config = {
   matcher: [
-    "/quiz/:path*",   // all quiz pages
-    "/safmeds/:path*", // all safmeds pages
-    // add more here if you want, e.g. "/admin/:path*"
+    "/((?!api|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)",
   ],
 };

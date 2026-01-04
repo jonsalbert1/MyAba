@@ -11,16 +11,23 @@ export async function middleware(req: NextRequest) {
   const res = NextResponse.next();
   const pathname = req.nextUrl.pathname;
 
-  // ✅ IMPORTANT: handle misplaced code redirects (e.g. /?code=... or /login?code=...)
+  // ✅ IMPORTANT: only rescue auth codes on safe landing pages
+  // Supabase OAuth/magic-link can land on /, /login, or /auth/* with ?code=...
+  // BUT your app also uses "code" for quiz/subdomain stuff, so we must NOT hijack globally.
   const code = req.nextUrl.searchParams.get("code");
-  if (code && pathname !== "/auth/callback") {
+  const safeAuthLanding =
+    pathname === "/" || pathname === "/login" || pathname.startsWith("/auth/");
+
+  if (code && pathname !== "/auth/callback" && safeAuthLanding) {
     const redirectUrl = req.nextUrl.clone();
     redirectUrl.pathname = "/auth/callback";
 
     // Replace the entire query so we don't accumulate junk params
     redirectUrl.search = "";
     redirectUrl.searchParams.set("code", code);
-    redirectUrl.searchParams.set("redirectedFrom", pathname);
+
+    // Preserve full original destination (path + query)
+    redirectUrl.searchParams.set("redirectedFrom", fullPath(req));
 
     return NextResponse.redirect(redirectUrl);
   }

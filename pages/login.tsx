@@ -1,10 +1,8 @@
 // pages/login.tsx
-import { FormEvent, useEffect, useMemo, useState } from "react";
 import Head from "next/head";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import { useSupabaseClient, useUser } from "@supabase/auth-helpers-react";
-
-type Mode = "signin" | "signup";
 
 function safeInternalPath(v: unknown) {
   if (typeof v !== "string") return null;
@@ -17,144 +15,126 @@ export default function LoginPage() {
   const supabase = useSupabaseClient();
   const user = useUser();
 
-  const [mode, setMode] = useState<Mode>("signin");
+  const redirectedFrom = useMemo(() => {
+    return safeInternalPath(router.query.redirectedFrom) ?? "/";
+  }, [router.query.redirectedFrom]);
+
+  // ✅ Default to LOGIN
+  const [mode, setMode] = useState<"login" | "signup">("login");
+
   const [email, setEmail] = useState("");
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
+  const [first, setFirst] = useState("");
+  const [last, setLast] = useState("");
 
   const [sent, setSent] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const nextPath = useMemo(() => {
-    const rf = safeInternalPath(router.query.redirectedFrom);
-    const next = safeInternalPath(router.query.next);
-    return rf ?? next ?? "/";
-  }, [router.query.redirectedFrom, router.query.next]);
-
-  // If already signed in, get them off /login
+  // If already signed in, go where they intended (do it in an effect)
   useEffect(() => {
     if (!user) return;
-    router.replace(nextPath);
-  }, [user, router, nextPath]);
+    router.replace(redirectedFrom);
+  }, [user, redirectedFrom, router]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
 
     const trimmedEmail = email.trim();
-    if (!trimmedEmail) {
-      setError("Please enter your email.");
-      return;
-    }
+    if (!trimmedEmail) return setError("Enter your email.");
 
-    const fn = firstName.trim();
-    const ln = lastName.trim();
+    if (mode === "signup") {
+      const f = first.trim();
+      const l = last.trim();
+      if (!f || !l) return setError("Enter first and last name to create an account.");
 
-    if (mode === "signup" && (!fn || !ln)) {
-      setError("Please enter your first and last name.");
-      return;
+      // Store temporarily so your post-auth step can write profiles + trigger admin email webhook
+      localStorage.setItem("myaba_pending_first", f);
+      localStorage.setItem("myaba_pending_last", l);
+      localStorage.setItem("myaba_pending_email", trimmedEmail);
+      localStorage.setItem("myaba_pending_redirect", redirectedFrom);
+    } else {
+      // Clear any old pending signup data
+      localStorage.removeItem("myaba_pending_first");
+      localStorage.removeItem("myaba_pending_last");
+      localStorage.removeItem("myaba_pending_email");
+      localStorage.removeItem("myaba_pending_redirect");
     }
 
     setLoading(true);
 
-    try {
-      const origin =
-        typeof window !== "undefined"
-          ? window.location.origin
-          : process.env.NEXT_PUBLIC_SITE_URL || "";
+    // ✅ Always redirect back to the same origin the user is currently on
+    const origin = window.location.origin;
+    const emailRedirectTo =
+      `${origin}/auth/callback?redirectedFrom=${encodeURIComponent(redirectedFrom)}&mode=${mode}`;
 
-      if (!origin) {
-        setError("Unable to determine redirect URL. Please set NEXT_PUBLIC_SITE_URL.");
-        return;
-      }
+    const { error } = await supabase.auth.signInWithOtp({
+      email: trimmedEmail,
+      options: {
+        emailRedirectTo,
+        // ✅ Only create user in signup mode
+        shouldCreateUser: mode === "signup",
+      },
+    });
 
-      const emailRedirectTo =
-        `${origin}/auth/callback?redirectedFrom=${encodeURIComponent(nextPath)}`;
+    setLoading(false);
 
-      const { error } = await supabase.auth.signInWithOtp({
-        email: trimmedEmail,
-        options: {
-          emailRedirectTo,
-          // ✅ store name ONLY for signup; callback will copy it into profiles
-          ...(mode === "signup"
-            ? { data: { first_name: fn, last_name: ln } }
-            : {}),
-        },
-      });
-
-      if (error) {
-        setError(error.message);
-      } else {
-        setSent(true);
-      }
-    } catch (err: any) {
-      setError(err?.message || "Something went wrong.");
-    } finally {
-      setLoading(false);
-    }
+    if (error) return setError(error.message);
+    setSent(true);
   }
 
   return (
     <>
       <Head>
-        <title>{mode === "signup" ? "Create account | myABA.app" : "Sign in | myABA.app"}</title>
+        <title>{mode === "signup" ? "Create account" : "Sign in"} | myABA.app</title>
       </Head>
 
-      <main className="mx-auto max-w-md px-4 py-8">
-        <div className="mb-6 flex rounded-lg border p-1">
+      <main className="mx-auto max-w-md px-4 py-10">
+        <h1 className="text-2xl font-semibold">
+          {mode === "signup" ? "Create your account" : "Sign in"}
+        </h1>
+
+        <div className="mt-4 flex gap-2 rounded-md border p-1">
           <button
             type="button"
-            onClick={() => {
-              setMode("signin");
-              setError(null);
-              setSent(false);
-            }}
-            className={`flex-1 rounded-md px-3 py-2 text-sm font-semibold ${
-              mode === "signin" ? "bg-black text-white" : "text-gray-700"
+            onClick={() => setMode("login")}
+            className={`flex-1 rounded px-3 py-2 text-sm ${
+              mode === "login" ? "bg-black text-white" : ""
             }`}
           >
             Sign in
           </button>
+
           <button
             type="button"
-            onClick={() => {
-              setMode("signup");
-              setError(null);
-              setSent(false);
-            }}
-            className={`flex-1 rounded-md px-3 py-2 text-sm font-semibold ${
-              mode === "signup" ? "bg-black text-white" : "text-gray-700"
+            onClick={() => setMode("signup")}
+            className={`flex-1 rounded px-3 py-2 text-sm ${
+              mode === "signup" ? "bg-black text-white" : ""
             }`}
           >
             Create account
           </button>
         </div>
 
-        <h1 className="mb-2 text-2xl font-semibold">
-          {mode === "signup" ? "Create your account" : "Sign in"}
-        </h1>
-
-        <p className="mb-4 text-sm text-gray-600">
-          {mode === "signup"
-            ? "Enter your name and email. We'll send you a magic link to finish creating your account."
-            : "Enter your email and we'll send you a magic link to sign in."}
+        <p className="mt-3 text-sm text-gray-600">
+          We’ll email you a magic link to finish{" "}
+          {mode === "signup" ? "creating your account" : "signing in"}.
         </p>
 
         {sent ? (
-          <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-            Magic link sent to <strong>{email}</strong>. Open the link in the{" "}
+          <div className="mt-6 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+            Magic link sent to <strong>{email}</strong>. Open it in the{" "}
             <strong>same browser</strong>.
           </div>
         ) : (
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="mt-6 space-y-4">
             {mode === "signup" && (
               <>
                 <div>
                   <label className="mb-1 block text-sm font-medium">First name</label>
                   <input
-                    value={firstName}
-                    onChange={(e) => setFirstName(e.target.value)}
+                    value={first}
+                    onChange={(e) => setFirst(e.target.value)}
                     className="w-full rounded border px-3 py-2 text-sm"
                     autoComplete="given-name"
                     required
@@ -164,8 +144,8 @@ export default function LoginPage() {
                 <div>
                   <label className="mb-1 block text-sm font-medium">Last name</label>
                   <input
-                    value={lastName}
-                    onChange={(e) => setLastName(e.target.value)}
+                    value={last}
+                    onChange={(e) => setLast(e.target.value)}
                     className="w-full rounded border px-3 py-2 text-sm"
                     autoComplete="family-name"
                     required
@@ -175,7 +155,7 @@ export default function LoginPage() {
             )}
 
             <div>
-              <label className="mb-1 block text-sm font-medium">Email address</label>
+              <label className="mb-1 block text-sm font-medium">Email</label>
               <input
                 type="email"
                 value={email}
@@ -191,9 +171,9 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full rounded-md border bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60"
+              className="w-full rounded-md border bg-black px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
             >
-              {loading ? "Sending magic link…" : "Send magic link"}
+              {loading ? "Sending…" : "Send magic link"}
             </button>
           </form>
         )}

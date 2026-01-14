@@ -6,6 +6,7 @@ import { getDomainTitle, getSubdomainText } from "@/lib/tco";
 
 // Localhost can switch between v1/v2 by setting NEXT_PUBLIC_QUIZ_TABLE in .env.local
 const QUIZ_TABLE = "quiz_questions_v2";
+
 type QuizItem = {
   id: string;
   domain?: string | null;
@@ -48,11 +49,8 @@ const stripChoicePrefix = (s: string | null | undefined) => {
   return x.replace(/^\s*[A-D]\s*[\.)\:\-]\s*/i, "").trim();
 };
 
-const norm = (s: string | null | undefined) => stripChoicePrefix(s)
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-
+const norm = (s: string | null | undefined) =>
+  stripChoicePrefix(s).replace(/\s+/g, " ").trim().toLowerCase();
 
 const isAnswerLetter = (x: string | null | undefined): x is AnswerLetter =>
   x === "A" || x === "B" || x === "C" || x === "D";
@@ -153,6 +151,7 @@ const getCorrectDisplayLetter = (
   }
   return null;
 };
+
 function normalizeArrayIds(arr: any[] | null | undefined): string[] {
   if (!arr) return [];
   return arr.map((x) => String(x));
@@ -261,6 +260,19 @@ export default function QuizRunnerPage() {
     } catch {}
   }
 
+  // ✅ FIX: Clear sticky selection/feedback when changing subdomain (Finish → Next subdomain)
+  useEffect(() => {
+    setSelectedAnswer(null);
+    setShowFeedback(false);
+    setSubmitting(false);
+  }, [subCode]);
+
+  // ✅ Extra safety: clear selection/feedback when the current question changes
+  useEffect(() => {
+    setSelectedAnswer(null);
+    setShowFeedback(false);
+  }, [currentItem?.id]);
+
   // ============================
   // LOAD or RESUME ATTEMPT
   // ============================
@@ -280,6 +292,12 @@ export default function QuizRunnerPage() {
     const load = async () => {
       setLoading(true);
       setMsg("Loading quiz…");
+
+      // ✅ FIX: clear sticky UI state at the start of every load
+      setSelectedAnswer(null);
+      setShowFeedback(false);
+      setSubmitting(false);
+
       try {
         // Resume existing attempt?
         if (!freshFlag) {
@@ -367,17 +385,16 @@ export default function QuizRunnerPage() {
           return;
         }
 
-// Rotate WHICH questions (and their order) per attempt, per subdomain.
-// We sample QUIZ_SIZE questions from a larger BANK_LIMIT bank.
-const bank = questions ?? [];
-const attemptSeed = hash32(`${user?.id ?? "anon"}:${subCode}:${Date.now()}`);
-const qOrder = shuffledIndices(bank.length, attemptSeed);
-const selectedQuestions = qOrder
-  .map((i) => bank[i])
-  .slice(0, Math.min(QUIZ_SIZE, bank.length));
+        // Rotate WHICH questions (and their order) per attempt, per subdomain.
+        // We sample QUIZ_SIZE questions from a larger BANK_LIMIT bank.
+        const bank = questions ?? [];
+        const attemptSeed = hash32(`${user?.id ?? "anon"}:${subCode}:${Date.now()}`);
+        const qOrder = shuffledIndices(bank.length, attemptSeed);
+        const selectedQuestions = qOrder
+          .map((i) => bank[i])
+          .slice(0, Math.min(QUIZ_SIZE, bank.length));
 
-const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
-
+        const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
           id: String(q.id),
           domain: q.domain,
           subdomain: q.subdomain,
@@ -456,9 +473,6 @@ const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
 
     if (!attempt || !currentItem) return;
 
-    // 1️⃣ Compute new scores locally
-    // We store the *option text* as the user's selectedAnswer.
-    // correct_answer in v2 is also stored as the *option text*.
     const correctText = getCorrectText(currentItem);
     const correct = !!correctText && norm(choiceText) === norm(correctText);
 
@@ -472,14 +486,12 @@ const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
     const totalQ = items.length;
     const nowIso = new Date().toISOString();
 
-    // 2️⃣ Update localStorage immediately
     if (newStatus === "completed") {
       setLocalDone(newCorrect, totalQ);
     } else {
       setLocalLive(index + 1, totalQ);
     }
 
-    // 3️⃣ Update local attempt state immediately
     setAttempt((prev) =>
       prev
         ? {
@@ -493,14 +505,11 @@ const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
         : prev
     );
 
-    // 4️⃣ Show feedback right away
     setShowFeedback(true);
 
-    // 5️⃣ Save to Supabase in background
     setSubmitting(true);
     (async () => {
       try {
-        // Update quiz_attempts row
         const { error: updErr } = await supabase
           .from("quiz_attempts")
           .update({
@@ -516,11 +525,9 @@ const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
           console.warn("quiz_attempts update error:", updErr);
         }
 
-        // If quiz is finished, upsert into quiz_subdomain_progress
         if (newStatus === "completed" && user && totalQ > 0) {
           const pct = Math.round((newCorrect / totalQ) * 100);
 
-          // See if we already have a row for this user+domain+subdomain
           const { data: existing, error: selErr } = await supabase
             .from("quiz_subdomain_progress")
             .select("best_accuracy_percent")
@@ -532,7 +539,6 @@ const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
           if (selErr) {
             console.warn("quiz_subdomain_progress select error:", selErr);
           } else if (!existing) {
-            // No previous record → insert
             const { error: insErr2 } = await supabase
               .from("quiz_subdomain_progress")
               .insert({
@@ -549,7 +555,6 @@ const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
             existing.best_accuracy_percent == null ||
             pct > existing.best_accuracy_percent
           ) {
-            // Better score → update
             const { error: upd2Err } = await supabase
               .from("quiz_subdomain_progress")
               .update({ best_accuracy_percent: pct })
@@ -608,12 +613,11 @@ const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
 
           if (showFeedback) {
             const correctText = getCorrectText(currentItem);
-            const isCorrectAnswer = !!correctText && (opt.label ?? null) === correctText;
+            const isCorrectAnswer =
+              !!correctText && (opt.label ?? null) === correctText;
 
-            if (isCorrectAnswer)
-              highlightClasses = "border-green-500 bg-green-50";
-            else if (isSelected)
-              highlightClasses = "border-red-500 bg-red-50";
+            if (isCorrectAnswer) highlightClasses = "border-green-500 bg-green-50";
+            else if (isSelected) highlightClasses = "border-red-500 bg-red-50";
           } else if (isSelected) {
             highlightClasses = "border-blue-500 bg-blue-50";
           }
@@ -649,8 +653,7 @@ const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
 
         {correctText && (
           <div className="mt-1 text-zinc-800">
-            Correct answer:{" "}
-            <span className="font-semibold">{correctText}</span>
+            Correct answer: <span className="font-semibold">{correctText}</span>
           </div>
         )}
 
@@ -685,20 +688,21 @@ const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
             Quiz – {domainTitle || domain} {subCode && `• ${subCode}`}
           </h1>
 
-          {subdomainText && <p className="text-xs text-zinc-500 mt-1">{subdomainText}</p>}
+          {subdomainText && (
+            <p className="text-xs text-zinc-500 mt-1">{subdomainText}</p>
+          )}
 
           <div className="mt-1 text-xs text-zinc-500">
             Question {progressLabel}{" "}
             {attempt && (
               <>
-                • Correct: {attempt.correct_count} • Incorrect: {attempt.incorrect_count} • Status:{" "}
-                {attempt.status}
+                • Correct: {attempt.correct_count} • Incorrect: {attempt.incorrect_count} •
+                Status: {attempt.status}
               </>
             )}
           </div>
         </div>
 
-        {/* Back to TOC */}
         <button
           type="button"
           onClick={() => router.push("/quiz")}
@@ -712,22 +716,23 @@ const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
 
       {!loading && msg && <p className="text-sm text-red-600">{msg}</p>}
 
-      {!loading && !msg && !currentItem && <p className="text-sm text-zinc-600">No question loaded.</p>}
+      {!loading && !msg && !currentItem && (
+        <p className="text-sm text-zinc-600">No question loaded.</p>
+      )}
 
       {!loading && currentItem && (
-        <section>
+        // ✅ FIX: key forces a clean remount of the question UI
+        <section key={`${attempt?.id ?? "noattempt"}-${currentItem.id}`}>
           <div className="rounded-md border border-zinc-200 bg-white p-4 shadow-sm">
             <p className="text-sm font-medium text-zinc-900">{currentItem.question}</p>
 
             {renderChoices()}
           </div>
 
-          {/* === BUTTONS (updated) === */}
           <div className="mt-4 flex flex-wrap gap-2 items-center">
             {items.length > 0 && (
               <>
                 {index + 1 < items.length ? (
-                  // Not last question: show "Next question"
                   <button
                     onClick={handleNext}
                     disabled={!showFeedback}
@@ -736,11 +741,8 @@ const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
                     Next question
                   </button>
                 ) : (
-                  // Last question: only show Finish / Next / TOC
-                  // AFTER the user has answered (feedback is visible)
                   showFeedback && (
                     <>
-                      {/* Finish → Domain TOC */}
                       <button
                         onClick={() => router.push(`/quiz/${domain}`)}
                         className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white"
@@ -748,17 +750,19 @@ const quizItems: QuizItem[] = selectedQuestions.map((q: any) => ({
                         Finish
                       </button>
 
-                      {/* Next Subdomain */}
                       {getNextSubdomain(subCode) && (
                         <button
-                          onClick={() => router.push(`/quiz/runner?code=${getNextSubdomain(subCode)!}`)}
+                          onClick={() =>
+                            router.push(
+                              `/quiz/runner?code=${getNextSubdomain(subCode)!}`
+                            )
+                          }
                           className="rounded-md border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50"
                         >
                           Next: {getNextSubdomain(subCode)}
                         </button>
                       )}
 
-                      {/* Full TOC */}
                       <button
                         onClick={() => router.push("/quiz")}
                         className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50"
